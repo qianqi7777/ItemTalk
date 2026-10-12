@@ -1,1 +1,14 @@
+# 本地设计资料与 AI 协作说明，不提交到仓库
 /docinit
+/design
+/AGENTS.md
+/CLAUDE.md
+/CLAUDE.local.md
+/.claude/
+
+# 本地环境变量与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
