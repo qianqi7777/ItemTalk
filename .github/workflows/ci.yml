@@ -1,0 +1,89 @@
+name: CI
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - name: Install dependencies
+      working-directory: frontend
+      run: npm ci
+    - name: Lint
+      working-directory: frontend
+      run: npm run lint
+    - name: Type check
+      working-directory: frontend
+      run: npm run typecheck
+    - name: Test
+      working-directory: frontend
+      run: npm test
+    - name: Build
+      working-directory: frontend
+      run: npm run build
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: itemtalk_test
+          POSTGRES_USER: itemtalk
+          POSTGRES_PASSWORD: test
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+    - name: Install dependencies
+      working-directory: backend
+      run: uv sync --locked
+    - name: Lint
+      working-directory: backend
+      run: uv run ruff check .
+    - name: Format check
+      working-directory: backend
+      run: uv run ruff format --check .
+    - name: Create extensions
+      run: |
+        PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+        PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+    - name: Run migrations
+      working-directory: backend
+      env:
+        DATABASE_URL: postgresql+psycopg://itemtalk:test@localhost:5432/itemtalk_test
+        DB_HOST: localhost
+        DB_NAME: itemtalk_test
+        DB_USER: itemtalk
+        DB_PASSWORD: test
+      run: uv run alembic upgrade head
+    - name: Test
+      working-directory: backend
+      env:
+        DATABASE_URL: postgresql+psycopg://itemtalk:test@localhost:5432/itemtalk_test
+        JWT_SECRET: test-secret
+        DB_HOST: localhost
+        DB_NAME: itemtalk_test
+        DB_USER: itemtalk
+        DB_PASSWORD: test
+      run: uv run pytest -v
+'on':
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+    - dev

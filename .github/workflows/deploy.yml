@@ -1,0 +1,116 @@
+name: Deploy
+'on':
+  workflow_run:
+    workflows:
+    - CI
+    types:
+    - completed
+    branches:
+    - main
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full 40-character SHA with successful main CI
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event
+      == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name
+      == github.repository)
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+    - name: Verify commit CI
+      id: commit
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REQUESTED_SHA: ${{ github.event.inputs.commit_sha || github.event.workflow_run.head_sha }}
+      run: |
+        set -euo pipefail
+        sha="$REQUESTED_SHA"
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Full SHA required'; exit 2; }
+        gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f head_sha="$sha" -f branch=main -f event=push --jq '.workflow_runs | any(.conclusion == "success")' | grep -qx true
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+  build-and-push:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - &id001
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.validate.outputs.sha }}
+    - uses: docker/setup-buildx-action@v3
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - name: Build frontend
+      working-directory: frontend
+      env:
+        VITE_BASE_PATH: /itemtalk/
+        VITE_API_BASE_URL: /itemtalk/api/v1
+      run: |-
+        npm ci
+        npm run build
+    - name: Build api
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-api:sha-${{ needs.validate.outputs.sha }}
+    - name: Build frontend
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-frontend:sha-${{ needs.validate.outputs.sha }}
+        build-args: |-
+          VITE_BASE_PATH=/itemtalk/
+          VITE_API_BASE_URL=/itemtalk/api/v1
+  deploy:
+    needs:
+    - validate
+    - build-and-push
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://49.233.65.195/itemtalk/
+    steps:
+    - *id001
+    - name: Setup SSH
+      env:
+        SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        HOST_KEYS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      run: |-
+        umask 077
+        mkdir -p ~/.ssh
+        printf "%s\n" "$SSH_KEY" > ~/.ssh/id_ed25519
+        printf "%s\n" "$HOST_KEYS" > ~/.ssh/known_hosts
+    - name: Upload versioned release and deploy
+      env:
+        DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+      run: |
+        set -euo pipefail
+        peer="$DEPLOY_USER@$DEPLOY_HOST"
+        ssh -o BatchMode=yes -o ConnectTimeout=10 "$peer" "test -d /opt/itemtalk && test -f /opt/itemtalk/.env.production && mkdir -p /opt/itemtalk/releases/$RELEASE_SHA"
+        tar -czf - docker-compose.yml init-extensions.sql infra | ssh -o BatchMode=yes -o ConnectTimeout=10 "$peer" "tar -xzf - -C /opt/itemtalk/releases/$RELEASE_SHA"
+        ssh -o BatchMode=yes -o ConnectTimeout=10 "$peer" "bash /opt/itemtalk/releases/$RELEASE_SHA/infra/deploy.sh $RELEASE_SHA"

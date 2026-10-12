@@ -1,0 +1,193 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: itemtalk
+      POSTGRES_USER: itemtalk_admin
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?Set bootstrap password}
+      APP_DB_PASSWORD: ${DB_PASSWORD:?Set application password}
+      MIGRATION_DB_PASSWORD: ${DB_MIGRATION_PASSWORD:?Set migration password}
+    volumes:
+    - /opt/itemtalk/data/postgres:/var/lib/postgresql/data
+    - ./init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    - ./infra/init-roles.sh:/docker-entrypoint-initdb.d/02-roles.sh:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U itemtalk_admin -d itemtalk
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+    - itemtalk
+  api:
+    image: ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
+      VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
+      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      STT_PROVIDER: ${STT_PROVIDER:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-beijing}
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: itemtalk
+      DB_USER: itemtalk_app
+      DB_PASSWORD: ${DB_PASSWORD:?Set application password}
+      BUILD_VERSION: ${RELEASE_SHA:?Set release SHA}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT secret}
+      AUTH_COOKIE_SECURE: 'true'
+      AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/itemtalk/}
+      PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/itemtalk}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://49.233.65.195/itemtalk/}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+    - itemtalk
+  worker:
+    image: ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
+      VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
+      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      STT_PROVIDER: ${STT_PROVIDER:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-beijing}
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: itemtalk
+      DB_USER: itemtalk_app
+      DB_PASSWORD: ${DB_PASSWORD:?Set application password}
+      BUILD_VERSION: ${RELEASE_SHA:?Set release SHA}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT secret}
+      AUTH_COOKIE_SECURE: 'true'
+      AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/itemtalk/}
+      PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/itemtalk}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://49.233.65.195/itemtalk/}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    command: python -m app.worker
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+    - itemtalk
+  caddy:
+    image: ghcr.io/qianqi7777/itemtalk-frontend:${IMAGE_TAG:?Set fixed release tag}
+    ports:
+    - 127.0.0.1:8400:8080
+    volumes:
+    - ./infra/Caddyfile.shared:/etc/caddy/Caddyfile:ro
+    - /opt/itemtalk/data/caddy:/data
+    - /opt/itemtalk/data/caddy_config:/config
+    restart: unless-stopped
+    networks:
+    - itemtalk
+    depends_on:
+    - api
+  migration:
+    image: ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}
+    profiles:
+    - maintenance
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
+      VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
+      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      STT_PROVIDER: ${STT_PROVIDER:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-beijing}
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: itemtalk
+      DB_USER: itemtalk_migrator
+      DB_PASSWORD: ${DB_MIGRATION_PASSWORD:?Set migration password}
+      BUILD_VERSION: ${RELEASE_SHA:?Set release SHA}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT secret}
+      AUTH_COOKIE_SECURE: 'true'
+      AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/itemtalk/}
+      PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/itemtalk}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://49.233.65.195/itemtalk/}
+    entrypoint:
+    - python
+    - -m
+    - alembic
+    command:
+    - upgrade
+    - head
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+    - itemtalk
+networks:
+  itemtalk:
+    driver: bridge

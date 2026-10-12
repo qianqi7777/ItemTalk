@@ -1,0 +1,14 @@
+# Standalone host only; Compose >=2.24.4. Do not use on shared 80/443.
+services:
+  caddy:
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes: !override
+      - ./infra/Caddyfile.acme:/etc/caddy/Caddyfile:ro
+      - /opt/itemtalk/data/caddy:/data
+      - /opt/itemtalk/data/caddy_config:/config
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set public IP or domain}
+# Rebuild frontend with base=/ and API base=/api/v1.
+# Set PUBLIC_PATH_PREFIX=, AUTH_COOKIE_PATH=/ and APP_PUBLIC_URL=https://<site>/.

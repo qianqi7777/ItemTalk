@@ -1,0 +1,113 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: itemtalk
+      POSTGRES_USER: itemtalk
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-devpassword}
+    volumes:
+    - pgdata:/var/lib/postgresql/data
+    - ./init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    ports:
+    - 127.0.0.1:5432:5432
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U itemtalk
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
+      VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
+      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      STT_PROVIDER: ${STT_PROVIDER:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-beijing}
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: itemtalk
+      DB_USER: itemtalk
+      DB_PASSWORD: ${DB_PASSWORD:-devpassword}
+      JWT_SECRET: ${JWT_SECRET:-development-only-secret}
+      AUTH_COOKIE_SECURE: 'false'
+      AUTH_COOKIE_PATH: /
+      PUBLIC_PATH_PREFIX: ''
+      APP_PUBLIC_URL: http://localhost:5173/
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+    - 127.0.0.1:8000:8000
+    volumes:
+    - ./backend:/app:ro
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
+      VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
+      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      STT_PROVIDER: ${STT_PROVIDER:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-}
+      TTS_API_KEY: ${TTS_API_KEY:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-beijing}
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: itemtalk
+      DB_USER: itemtalk
+      DB_PASSWORD: ${DB_PASSWORD:-devpassword}
+      JWT_SECRET: ${JWT_SECRET:-development-only-secret}
+      AUTH_COOKIE_SECURE: 'false'
+      AUTH_COOKIE_PATH: /
+      PUBLIC_PATH_PREFIX: ''
+      APP_PUBLIC_URL: http://localhost:5173/
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+    - ./backend:/app:ro
+    command: python -m app.worker
+volumes:
+  pgdata: null

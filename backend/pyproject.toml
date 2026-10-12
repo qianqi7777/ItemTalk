@@ -1,0 +1,49 @@
+[project]
+name = "itemtalk-backend"
+version = "0.1.0"
+description = "ItemTalk API and worker"
+requires-python = ">=3.12,<3.13"
+# 版本全部精确锁定；升级时改这里并重新 uv lock，不用 pip freeze 生成依赖
+dependencies = [
+  "fastapi==0.143.0",
+  "uvicorn[standard]==0.54.0",
+  "pydantic-settings==2.15.0",
+  "sqlalchemy==2.1.4",
+  "alembic==1.20.0",
+  "psycopg[binary,pool]==3.3.6",
+  "psycopg-pool==3.3.3",
+  # Agent：DeepAgents 负责 Agent 装配（规划、子 Agent、工具）；
+  # LangGraph 负责运行时状态、checkpoint、interrupt/resume
+  "deepagents==0.7.24",
+  "langgraph==1.2.14",
+  "langgraph-checkpoint-postgres==3.1.2",
+  "langchain-core==1.6.9",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "httpx==0.28.1",
+  "ruff==0.17.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "postgres: 需要 TEST_DATABASE_URL 指向带 pgvector 的 PostgreSQL",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+ignore = ["S101"]  # 测试中允许 assert
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*" = ["E501"]

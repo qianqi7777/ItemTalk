@@ -1,0 +1,14 @@
+:8080 {
+    handle /api/* {
+        reverse_proxy api:8000 {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Prefix /itemtalk
+            flush_interval -1
+        }
+    }
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}
