@@ -121,7 +121,8 @@ def test_registered_model_url_accepts_omitted_separators_but_not_other_models(cl
             url = "https://helpguide.sony.net" + path
             execute(
                 connection,
-                "INSERT INTO sources(url,normalized_url,verification_status) VALUES (:url,:url,'pending')",
+                "INSERT INTO sources(url,normalized_url,verification_status) "
+                "VALUES (:url,:url,'pending')",
                 url=url,
             )
         found = known_model_sources(
