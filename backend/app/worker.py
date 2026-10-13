@@ -135,6 +135,7 @@ def cleanup_asset(job):
 
 def main():
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     stopped = False
 
     def stop(_signum, _frame):

@@ -8,7 +8,7 @@ from app.adapters import ModelGateway, SearchGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError
-from app.fetch import fetch_public
+from app.fetch import fetch_public, public_addresses
 from app.parser import parse_document
 from app.security import normalize
 from app.services.products import new_job
@@ -32,6 +32,30 @@ def official_url(url, domains):
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
+def register_official_source(connection, brand_name, url):
+    """运营登记可信品牌的候选 URL；内容核验和发布仍由研究任务完成。"""
+    brand = one(
+        connection,
+        "SELECT official_domains FROM brands WHERE normalized_name=:name",
+        name=normalize(brand_name),
+    )
+    if not brand or not official_url(url, brand["official_domains"] or []):
+        raise DomainError(422, "SOURCE_UNVERIFIED", "来源必须属于已登记的品牌官方域名")
+    public_addresses(url)
+    source = one(
+        connection,
+        "INSERT INTO sources(url,normalized_url,domain,source_type,"
+        "is_official,verification_status) "
+        "VALUES (:url,:url,:domain,'official',true,'pending') ON CONFLICT(normalized_url) "
+        "DO UPDATE SET normalized_url=EXCLUDED.normalized_url RETURNING *",
+        url=url,
+        domain=urlsplit(url).hostname,
+    )
+    if source["verification_status"] in {"revoked", "rejected"}:
+        raise DomainError(409, "SOURCE_UNVERIFIED", "已撤销或拒绝的来源不能重新登记")
+    return source
+
+
 def known_model_sources(connection, model):
     """复用已登记官方来源，补足搜索漏召回；路径须明确包含当前型号。
 
@@ -46,7 +70,10 @@ def known_model_sources(connection, model):
         "SELECT url FROM sources WHERE verification_status IN ('pending','verified') "
         "ORDER BY created_at LIMIT 100",
     )
-    code = re.escape(normalize(model["model_code"]))
+    # 官网路径可能省略型号中的连字符；仍要求完整字母数字边界，正文核验不放宽。
+    code = r"[-_]?".join(
+        re.escape(part) for part in re.split(r"[-_]", normalize(model["model_code"]))
+    )
     return [
         {"url": row["url"], "title": f"{model['brand_name']} {model['model_code']} 官方资料"}
         for row in rows

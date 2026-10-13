@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import execute, json_value, transaction
 from app.errors import DomainError
 from app.security import normalize
+from app.services.knowledge import register_official_source
 from app.speech import ASRProvider
 from app.storage import sanitize_image
 
@@ -98,6 +99,9 @@ def main():
     trust = commands.add_parser("trust-brand")
     trust.add_argument("--name", required=True)
     trust.add_argument("--domains", nargs="+", required=True)
+    source = commands.add_parser("register-source")
+    source.add_argument("--brand", required=True)
+    source.add_argument("--url", required=True)
     probe = commands.add_parser("agent-probe")
     probe.add_argument("--user-id", type=UUID, required=True)
     probe.add_argument("--instance-id", type=UUID, required=True)
@@ -126,6 +130,12 @@ def main():
                     domains=json_value(args.domains),
                 )
             print("Trusted domain registry updated")
+        elif args.command == "register-source":
+            if len(args.url) > 2000:
+                parser.error("Source URL exceeds length limit")
+            with transaction() as connection:
+                register_official_source(connection, args.brand, args.url)
+            print("Pending official source registered; content verification still required")
         else:
             config = {
                 "configurable": {"thread_id": f"probe:{args.user_id}:{args.instance_id}"},

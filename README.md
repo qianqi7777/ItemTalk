@@ -76,9 +76,12 @@ uv run python -m app.cli smoke --paid --image <本地铭牌图片路径> --audio
 
 ```powershell
 uv run python -m app.cli trust-brand --name <品牌> --domains <官方域名>
+uv run python -m app.cli register-source --brand <品牌> --url <官方资料链接>
 ```
 
 用户确认只创建个人实例。研究任务下载公共官方资料，解析页先暂存；型号、来源和资料版本均通过核验后才发布知识片段。私有照片不进入公共知识库。来源撤销后停止新检索，已有引用保留并显示状态变更。
+
+登记来源仅加入待核验 URL，不发布知识。链接须属于该品牌已登记的官方域名并通过公网地址检查；撤销的来源不能借登记恢复。搜索漏召回时，研究任务可使用这些候选来源，仍须独立核验正文中的型号、地区和硬件版本。
 
 搜索漏召回时可以复用已登记的官方来源，但来源路径须明确匹配型号，且仍走下载、解析、精确适用性和三级发布核验。不得把搜索摘要或非官方站点当作已核验证据。开发机 Fake-IP DNS 如解析到保留地址，默认 SSRF 检查会拒绝；可显式使用 `FETCH_DNS_PROVIDER=cloudflare`，通过加密 DNS 获取地址后仍逐跳检查公网 IP、固定连接并验证 TLS，生产默认保持 system。
 
@@ -95,6 +98,8 @@ uv run python -m app.cli trust-brand --name <品牌> --domains <官方域名>
 部署工作流仅构建成功 main CI 对应的完整 SHA，发布脚本使用固定 `sha-<SHA>` 镜像，保存迁移 revision、镜像摘要和发布前备份。健康/版本检查成功后切换 `current`；失败恢复上一发布应用，不自动降级数据库。首次部署失败则停止新应用，并撤销新 Nginx 路由。
 
 `infra/backup.sh` 和 `infra/check-health.sh` 分别提供数据库备份检查、HTTPS/证书到期检查；相应 systemd timer 需经确认后安装。监控非零退出应接入运维告警。备份归档结构验证不能替代实际恢复演练。
+
+试用版备份同时保存数据库 dump、持久化上传文件归档及校验和。维护窗口内运行备份可避免并发清理影响数据库与文件的一致性；恢复时应配对还原这些文件。
 
 可在拥有建库权限的隔离环境运行 `uv run python -m app.restore_check`。命令使用一致性快照导出，在本次新建的 `itemtalk_restore_*` 数据库中恢复，核对所有表的 SHA-256 内容摘要、扩展和约束后清理临时库，并保留受限备份及校验文件。Windows 可通过 `--pg-bin <PostgreSQL bin 目录>` 指定客户端。生产执行同样属于需要确认的服务器变更，演练必须在预留容量内进行。
 

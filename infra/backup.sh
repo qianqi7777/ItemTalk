@@ -14,4 +14,9 @@ docker compose --project-name itemtalk --env-file "$base/.env.production" \
 docker compose --project-name itemtalk --env-file "$base/.env.production" \
   --env-file "$release/.env.image_tag" -f "$release/docker-compose.yml" \
   exec -T db pg_restore --list < "$target" >/dev/null
+docker compose --project-name itemtalk --env-file "$base/.env.production" \
+  --env-file "$release/.env.image_tag" -f "$release/docker-compose.yml" \
+  exec -T api tar -czf - -C /app/.local-data/assets . > "$target.assets.tar.gz"
+tar -tzf "$target.assets.tar.gz" >/dev/null
+sha256sum "$target" "$target.assets.tar.gz" > "$target.sha256"
 echo 'Backup created and archive contents verified; restore drill still required'

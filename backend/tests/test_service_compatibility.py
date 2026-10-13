@@ -10,7 +10,7 @@ from app.adapters import ModelGateway, SearchGateway
 from app.config import Settings, settings
 from app.db import execute, transaction
 from app.errors import DomainError
-from app.services.knowledge import known_model_sources
+from app.services.knowledge import known_model_sources, register_official_source
 from app.services.queue import claim
 from app.upstream import response_error
 from tests.conftest import register_login
@@ -107,3 +107,49 @@ def test_targeted_worker_claim_does_not_claim_existing_job(client):
     second = post(client, "/products/identify", {"inputText": "second"}).json()
     assert claim(UUID(second["jobId"]))["id"] == UUID(second["jobId"])
     assert claim(UUID(first["jobId"]))["id"] == UUID(first["jobId"])
+
+
+@pytest.mark.postgres
+def test_registered_model_url_accepts_omitted_separators_but_not_other_models(client):
+    register_login(client)
+    with transaction() as connection:
+        for path in (
+            "/mdr/wh1000xm5/guide.html",
+            "/mdr/wh1000xm50/guide.html",
+            "/?model=WH-1000XM5",
+        ):
+            url = "https://helpguide.sony.net" + path
+            execute(
+                connection, "INSERT INTO sources(url,normalized_url) VALUES (:url,:url)", url=url
+            )
+        found = known_model_sources(
+            connection,
+            {"official_domains": ["sony.net"], "model_code": "WH-1000XM5", "brand_name": "Sony"},
+        )
+    assert [row["url"] for row in found] == ["https://helpguide.sony.net/mdr/wh1000xm5/guide.html"]
+
+
+@pytest.mark.postgres
+def test_operator_source_registration_cannot_publish_or_restore_revoked_sources(
+    client, monkeypatch
+):
+    register_login(client)
+    monkeypatch.setattr("app.services.knowledge.public_addresses", lambda url: None)
+    with transaction() as connection:
+        execute(
+            connection,
+            "INSERT INTO brands(name,normalized_name,official_domains) "
+            "VALUES ('Sony','sony','[\"sony.net\"]'::jsonb)",
+        )
+        with pytest.raises(DomainError):
+            register_official_source(connection, "Sony", "https://evil.example/wh1000xm5/")
+        url = "https://helpguide.sony.net/mdr/wh1000xm5/guide.html"
+        source = register_official_source(connection, "Sony", url)
+        assert source["verification_status"] == "pending"
+        execute(
+            connection,
+            "UPDATE sources SET verification_status='revoked' WHERE id=:id",
+            id=source["id"],
+        )
+        with pytest.raises(DomainError):
+            register_official_source(connection, "Sony", url)
