@@ -1,0 +1,6 @@
+[Unit]
+Description=ItemTalk HTTPS and certificate health
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/bin/bash /opt/itemtalk/current/infra/check-health.sh

@@ -1,6 +1,6 @@
 services:
   db:
-    image: pgvector/pgvector:pg16
+    image: ghcr.io/qianqi7777/itemtalk-db:${IMAGE_TAG:?Set fixed release tag}
     environment:
       POSTGRES_DB: itemtalk
       POSTGRES_USER: itemtalk_admin
@@ -26,20 +26,20 @@ services:
     environment:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      MODEL_API_KEY: ${MODEL_API_KEY:-}
-      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      MODEL_API_KEY: ${MODEL_API_KEY:?Set MODEL_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
-      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_MODEL: ${VISION_MODEL:-qwen3.7-flash}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
-      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:?Set SEARCH_API_KEY}
       STT_PROVIDER: ${STT_PROVIDER:-}
       STT_API_KEY: ${STT_API_KEY:-}
       TTS_PROVIDER: ${TTS_PROVIDER:-}
@@ -59,6 +59,25 @@ services:
       AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/itemtalk/}
       PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/itemtalk}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://49.233.65.195/itemtalk/}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-cos}
+      STORAGE_DIRECTORY: /app/.local-data/assets
+      SEARCH_BASE_URL: ${SEARCH_BASE_URL:-https://api.bochaai.com/v1/web-search}
+      DAILY_MODEL_CALL_LIMIT: ${DAILY_MODEL_CALL_LIMIT:-100}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      DAILY_GLOBAL_MODEL_CALL_LIMIT: ${DAILY_GLOBAL_MODEL_CALL_LIMIT:-1000}
+      STT_BASE_URL: ${STT_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      STT_MODEL: ${STT_MODEL:-qwen3-asr-flash}
+      CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-45}
+      VISION_TIMEOUT_SECONDS: ${VISION_TIMEOUT_SECONDS:-60}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
+      STT_TIMEOUT_SECONDS: ${STT_TIMEOUT_SECONDS:-60}
+      SEARCH_TIMEOUT_SECONDS: ${SEARCH_TIMEOUT_SECONDS:-20}
+      UPSTREAM_MAX_ATTEMPTS: ${UPSTREAM_MAX_ATTEMPTS:-2}
+      SEARCH_MAX_RESULTS: ${SEARCH_MAX_RESULTS:-10}
+      FETCH_DNS_PROVIDER: ${FETCH_DNS_PROVIDER:-system}
+    volumes:
+    - /opt/itemtalk/data/assets:/app/.local-data/assets
     depends_on:
       db:
         condition: service_healthy
@@ -68,7 +87,8 @@ services:
       - CMD
       - python
       - -c
-      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health',
+        timeout=5)
       interval: 30s
       timeout: 10s
       retries: 3
@@ -79,20 +99,20 @@ services:
     environment:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      MODEL_API_KEY: ${MODEL_API_KEY:-}
-      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      MODEL_API_KEY: ${MODEL_API_KEY:?Set MODEL_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
-      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_MODEL: ${VISION_MODEL:-qwen3.7-flash}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
-      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:?Set SEARCH_API_KEY}
       STT_PROVIDER: ${STT_PROVIDER:-}
       STT_API_KEY: ${STT_API_KEY:-}
       TTS_PROVIDER: ${TTS_PROVIDER:-}
@@ -112,6 +132,25 @@ services:
       AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/itemtalk/}
       PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/itemtalk}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://49.233.65.195/itemtalk/}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-cos}
+      STORAGE_DIRECTORY: /app/.local-data/assets
+      SEARCH_BASE_URL: ${SEARCH_BASE_URL:-https://api.bochaai.com/v1/web-search}
+      DAILY_MODEL_CALL_LIMIT: ${DAILY_MODEL_CALL_LIMIT:-100}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      DAILY_GLOBAL_MODEL_CALL_LIMIT: ${DAILY_GLOBAL_MODEL_CALL_LIMIT:-1000}
+      STT_BASE_URL: ${STT_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      STT_MODEL: ${STT_MODEL:-qwen3-asr-flash}
+      CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-45}
+      VISION_TIMEOUT_SECONDS: ${VISION_TIMEOUT_SECONDS:-60}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
+      STT_TIMEOUT_SECONDS: ${STT_TIMEOUT_SECONDS:-60}
+      SEARCH_TIMEOUT_SECONDS: ${SEARCH_TIMEOUT_SECONDS:-20}
+      UPSTREAM_MAX_ATTEMPTS: ${UPSTREAM_MAX_ATTEMPTS:-2}
+      SEARCH_MAX_RESULTS: ${SEARCH_MAX_RESULTS:-10}
+      FETCH_DNS_PROVIDER: ${FETCH_DNS_PROVIDER:-system}
+    volumes:
+    - /opt/itemtalk/data/assets:/app/.local-data/assets
     depends_on:
       db:
         condition: service_healthy
@@ -143,20 +182,20 @@ services:
     environment:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      MODEL_API_KEY: ${MODEL_API_KEY:-}
-      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      MODEL_API_KEY: ${MODEL_API_KEY:?Set MODEL_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      VISION_API_KEY: ${VISION_API_KEY:-${MODEL_API_KEY:-}}
-      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_MODEL: ${VISION_MODEL:-qwen3.7-flash}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-${MODEL_API_KEY:-}}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       EMBEDDING_REVISION: ${EMBEDDING_REVISION:-initial}
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-}
-      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:?Set SEARCH_API_KEY}
       STT_PROVIDER: ${STT_PROVIDER:-}
       STT_API_KEY: ${STT_API_KEY:-}
       TTS_PROVIDER: ${TTS_PROVIDER:-}
@@ -176,6 +215,23 @@ services:
       AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/itemtalk/}
       PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/itemtalk}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://49.233.65.195/itemtalk/}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-cos}
+      STORAGE_DIRECTORY: /app/.local-data/assets
+      SEARCH_BASE_URL: ${SEARCH_BASE_URL:-https://api.bochaai.com/v1/web-search}
+      DAILY_MODEL_CALL_LIMIT: ${DAILY_MODEL_CALL_LIMIT:-100}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      DAILY_GLOBAL_MODEL_CALL_LIMIT: ${DAILY_GLOBAL_MODEL_CALL_LIMIT:-1000}
+      STT_BASE_URL: ${STT_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      STT_MODEL: ${STT_MODEL:-qwen3-asr-flash}
+      CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-45}
+      VISION_TIMEOUT_SECONDS: ${VISION_TIMEOUT_SECONDS:-60}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
+      STT_TIMEOUT_SECONDS: ${STT_TIMEOUT_SECONDS:-60}
+      SEARCH_TIMEOUT_SECONDS: ${SEARCH_TIMEOUT_SECONDS:-20}
+      UPSTREAM_MAX_ATTEMPTS: ${UPSTREAM_MAX_ATTEMPTS:-2}
+      SEARCH_MAX_RESULTS: ${SEARCH_MAX_RESULTS:-10}
+      FETCH_DNS_PROVIDER: ${FETCH_DNS_PROVIDER:-system}
     entrypoint:
     - python
     - -m
@@ -183,6 +239,8 @@ services:
     command:
     - upgrade
     - head
+    volumes:
+    - /opt/itemtalk/data/assets:/app/.local-data/assets
     depends_on:
       db:
         condition: service_healthy

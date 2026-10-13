@@ -1,0 +1,351 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Button, Input, Spin, Upload } from 'antd';
+import {
+  Check,
+  ChevronRight,
+  FileImage,
+  PackageSearch,
+  ShieldCheck,
+  Upload as UploadIcon,
+} from 'lucide-react';
+import { api, newKey, post, upload } from '../services/api';
+import type {
+  Asset,
+  Candidate,
+  Identification,
+  Job,
+  ProductInstance,
+} from '../types/api';
+import { CandidateList } from '../features/products/CandidateList';
+import { KnowledgeProgress } from '../features/products/KnowledgeProgress';
+import { usePolling } from '../hooks/usePolling';
+import { ChatPanel } from './ChatPanel';
+
+export function HomePage() {
+  const [input, setInput] = useState('');
+  const [asset, setAsset] = useState<Asset>();
+  const [attempt, setAttempt] = useState<Identification>();
+  const [product, setProduct] = useState<ProductInstance>();
+  const [job, setJob] = useState<Job>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [manual, setManual] = useState(false);
+  const [brand, setBrand] = useState('');
+  const [code, setCode] = useState('');
+  const [region, setRegion] = useState('');
+  useEffect(() => {
+    void api<{ items: ProductInstance[] }>('/me/products')
+      .then((response) => setProduct(response.items[0]))
+      .catch((error) => setError(error.message));
+  }, []);
+  const pollAttempt = useCallback(async () => {
+    if (!attempt) return;
+    try {
+      setAttempt(await api<Identification>(`/identifications/${attempt.id}`));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '查询识别结果失败');
+    }
+  }, [attempt]);
+  usePolling(
+    pollAttempt,
+    !!attempt && ['queued', 'processing'].includes(attempt.status),
+  );
+  const pollProduct = useCallback(async () => {
+    if (!product) return;
+    try {
+      const updated = await api<ProductInstance>(`/me/products/${product.id}`);
+      setProduct(updated);
+      if (updated.knowledgeJobId)
+        setJob(await api<Job>(`/jobs/${updated.knowledgeJobId}`));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '查询资料进度失败');
+    }
+  }, [product]);
+  usePolling(
+    pollProduct,
+    !!product &&
+      ['queued', 'researching', 'parsing', 'embedding'].includes(
+        product.knowledgeStatus,
+      ),
+  );
+
+  const identify = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      setAttempt(
+        await post<Identification>(
+          '/products/identify',
+          {
+            ...(input.trim() ? { inputText: input.trim() } : {}),
+            ...(asset ? { assetIds: [asset.id] } : {}),
+            ...(attempt ? { supersedesAttemptId: attempt.id } : {}),
+          },
+          newKey(),
+        ),
+      );
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '识别请求失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async (candidate?: Candidate) => {
+    if (!attempt) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await post<ProductInstance>(
+        `/identifications/${attempt.id}/confirm`,
+        candidate
+          ? { productModelId: candidate.productModelId }
+          : {
+              userProvidedModel: {
+                brandName: brand,
+                modelCode: code,
+                ...(region ? { region } : {}),
+              },
+            },
+        newKey(),
+      );
+      setProduct(result);
+      setAttempt(undefined);
+      setJob(undefined);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '型号确认失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const retryBuild = async () => {
+    if (!product) return;
+    setBusy(true);
+    setError('');
+    try {
+      await post(
+        `/products/${product.productModelId}/knowledge-jobs`,
+        {},
+        newKey(),
+        product.knowledgeJobId || undefined,
+      );
+      await pollProduct();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '重试失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="workspace">
+      <header className="page-heading">
+        <span className="eyebrow">你的设备，值得被了解</span>
+        <h1>{product ? '用好你的每一件设备' : '先拍一张，我来帮你认出它'}</h1>
+        <p>确认准确型号，查找官方资料，让每一个答案都有据可查。</p>
+      </header>
+      {error && (
+        <Alert
+          title={error}
+          type="error"
+          showIcon
+          closable
+          onClose={() => setError('')}
+          role="alert"
+        />
+      )}
+      {product && (
+        <section className="product-summary">
+          <div className="product-icon">
+            <PackageSearch size={32} aria-hidden="true" />
+          </div>
+          <div>
+            <span className="eyebrow">当前产品</span>
+            <h2>
+              {product.brandName} · {product.modelCode}
+            </h2>
+            <KnowledgeProgress product={product} job={job} />
+          </div>
+          <div className="product-actions">
+            <span>
+              <ShieldCheck size={16} aria-hidden="true" />
+              {product.identityStatus === 'verified'
+                ? '型号已核验'
+                : '型号待来源核验'}
+            </span>
+            {['failed', 'partial'].includes(product.knowledgeStatus) && (
+              <Button
+                loading={busy}
+                onClick={() =>
+                  product.identityStatus === 'verified'
+                    ? void retryBuild()
+                    : setProduct(undefined)
+                }
+              >
+                {product.identityStatus === 'verified'
+                  ? '重试资料构建'
+                  : '补充型号信息'}
+              </Button>
+            )}
+          </div>
+        </section>
+      )}
+      {!product && (
+        <section className="identify-card">
+          <div className="section-heading">
+            <PackageSearch size={20} aria-hidden="true" />
+            <h2>认识你的产品</h2>
+            <span>照片或文字都可以</span>
+          </div>
+          <Upload.Dragger
+            accept="image/jpeg,image/png,image/webp"
+            showUploadList={false}
+            disabled={busy}
+            beforeUpload={(file) => {
+              if (file.size > 10 * 1024 * 1024) {
+                setError('图片需小于 10 MB');
+                return false;
+              }
+              setBusy(true);
+              setError('');
+              void upload(file)
+                .then(setAsset)
+                .catch((error) => setError(error.message))
+                .finally(() => setBusy(false));
+              return false;
+            }}
+          >
+            <div className="upload-visual">
+              {asset?.readUrl ? (
+                <img src={asset.readUrl} alt="已上传的产品照片" />
+              ) : (
+                <UploadIcon size={28} aria-hidden="true" />
+              )}
+            </div>
+            <h3>{asset ? '照片已上传' : '拖入产品照片，或点击上传'}</h3>
+            <p>拍清产品外观或铭牌，识别更准确</p>
+            <small>JPG、PNG、WebP · 最大 10 MB</small>
+          </Upload.Dragger>
+          <label className="text-label" htmlFor="product-description">
+            或者，描述一下你的产品
+          </label>
+          <Input.TextArea
+            id="product-description"
+            placeholder="例如：品牌、型号、铭牌上的文字…"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            autoSize={{ minRows: 3 }}
+            maxLength={10000}
+          />
+          <div className="identify-footer">
+            <small>
+              <ShieldCheck size={14} aria-hidden="true" />
+              照片保持私有，仅用于识别；将发送至模型服务处理。
+            </small>
+            <Button
+              type="primary"
+              loading={busy}
+              disabled={!asset && !input.trim()}
+              onClick={() => void identify()}
+            >
+              开始识别
+              <ChevronRight size={16} />
+            </Button>
+          </div>
+          {attempt && (
+            <div className="identification-result" aria-live="polite">
+              {['queued', 'processing'].includes(attempt.status) && (
+                <div>
+                  <Spin size="small" /> 正在识别产品，请稍候…
+                </div>
+              )}
+              {attempt.status === 'failed' && (
+                <Alert
+                  title={attempt.clarification || '识别失败，请补充信息后重试'}
+                  type="error"
+                  showIcon
+                />
+              )}
+              {attempt.status === 'waiting_for_user' && (
+                <>
+                  <div className="section-heading">
+                    <Check size={20} aria-hidden="true" />
+                    <h2>请确认准确型号</h2>
+                  </div>
+                  <p>用户确认后仍需官方来源核验，才会进入公共资料库。</p>
+                  {attempt.clarification && (
+                    <Alert
+                      title={attempt.clarification}
+                      type="warning"
+                      showIcon
+                    />
+                  )}
+                  <CandidateList
+                    candidates={attempt.candidates}
+                    busy={busy}
+                    onConfirm={(candidate) => void confirm(candidate)}
+                  />
+                  <Button type="link" onClick={() => setManual(!manual)}>
+                    不在列表中？手动输入型号
+                  </Button>
+                  {manual && (
+                    <div className="manual-model">
+                      <Input
+                        aria-label="品牌"
+                        placeholder="品牌"
+                        value={brand}
+                        onChange={(event) => setBrand(event.target.value)}
+                        maxLength={120}
+                      />
+                      <Input
+                        aria-label="型号"
+                        placeholder="准确型号"
+                        value={code}
+                        onChange={(event) => setCode(event.target.value)}
+                        maxLength={160}
+                      />
+                      <Input
+                        aria-label="地区"
+                        placeholder="地区（可选，如 CN）"
+                        value={region}
+                        onChange={(event) => setRegion(event.target.value)}
+                        maxLength={40}
+                      />
+                      <Button
+                        type="primary"
+                        disabled={!brand.trim() || !code.trim()}
+                        loading={busy}
+                        onClick={() => void confirm()}
+                      >
+                        确认手动型号
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+      {product ? (
+        <ChatPanel key={product.id} product={product} />
+      ) : (
+        <div className="how-it-works">
+          <div>
+            <FileImage size={20} aria-hidden="true" />
+            <strong>01 识别产品</strong>
+            <p>上传外观或铭牌</p>
+          </div>
+          <div>
+            <Check size={20} aria-hidden="true" />
+            <strong>02 确认型号</strong>
+            <p>你来确认准确型号</p>
+          </div>
+          <div>
+            <ShieldCheck size={20} aria-hidden="true" />
+            <strong>03 有据问答</strong>
+            <p>依据核验资料回答</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

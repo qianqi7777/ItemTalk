@@ -1,0 +1,2 @@
+# GitHub runners can reach Docker Hub; the deployment server pulls only from GHCR.
+FROM pgvector/pgvector:pg16

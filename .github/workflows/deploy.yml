@@ -46,8 +46,7 @@ jobs:
       contents: read
       packages: write
     steps:
-    - &id001
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         ref: ${{ needs.validate.outputs.sha }}
     - uses: docker/setup-buildx-action@v3
@@ -75,6 +74,13 @@ jobs:
         context: ./backend
         push: true
         tags: ghcr.io/qianqi7777/itemtalk-api:sha-${{ needs.validate.outputs.sha }}
+    - name: Publish PostgreSQL with pgvector
+      uses: docker/build-push-action@v5
+      with:
+        context: ./infra
+        file: ./infra/Dockerfile.postgres
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-db:sha-${{ needs.validate.outputs.sha }}
     - name: Build frontend
       uses: docker/build-push-action@v5
       with:
@@ -89,11 +95,16 @@ jobs:
     - validate
     - build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     environment:
-      name: production
+      name: staging
       url: https://49.233.65.195/itemtalk/
     steps:
-    - *id001
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.validate.outputs.sha }}
     - name: Setup SSH
       env:
         SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
@@ -103,6 +114,14 @@ jobs:
         mkdir -p ~/.ssh
         printf "%s\n" "$SSH_KEY" > ~/.ssh/id_ed25519
         printf "%s\n" "$HOST_KEYS" > ~/.ssh/known_hosts
+    - name: Authenticate release pulls with temporary registry token
+      env:
+        GHCR_TOKEN: ${{ github.token }}
+        DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      run: |
+        set -euo pipefail
+        printf '%s' "$GHCR_TOKEN" | ssh -o BatchMode=yes -o ConnectTimeout=10 "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u $GITHUB_ACTOR --password-stdin" >/dev/null
     - name: Upload versioned release and deploy
       env:
         DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
@@ -114,3 +133,9 @@ jobs:
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$peer" "test -d /opt/itemtalk && test -f /opt/itemtalk/.env.production && mkdir -p /opt/itemtalk/releases/$RELEASE_SHA"
         tar -czf - docker-compose.yml init-extensions.sql infra | ssh -o BatchMode=yes -o ConnectTimeout=10 "$peer" "tar -xzf - -C /opt/itemtalk/releases/$RELEASE_SHA"
         ssh -o BatchMode=yes -o ConnectTimeout=10 "$peer" "bash /opt/itemtalk/releases/$RELEASE_SHA/infra/deploy.sh $RELEASE_SHA"
+    - name: Remove temporary registry credential
+      if: always()
+      env:
+        DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      run: ssh -o BatchMode=yes -o ConnectTimeout=10 "$DEPLOY_USER@$DEPLOY_HOST" 'docker logout ghcr.io' >/dev/null

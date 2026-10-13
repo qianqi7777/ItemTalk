@@ -27,6 +27,7 @@ mkdir -p "$base/backups"
 backup=$base/backups/pre-$sha-$(date -u +%Y%m%dT%H%M%SZ).dump
 compose exec -T db pg_dump -U itemtalk_admin -d itemtalk -Fc > "$backup"
 [[ -s $backup ]] || { echo 'Backup failed'; exit 1; }
+compose exec -T db pg_restore --list < "$backup" >/dev/null
 rollback() {
   trap - ERR
   if [[ -n $previous && $previous != "$release" && -f $previous/.env.image_tag ]]; then
@@ -35,13 +36,19 @@ rollback() {
     echo 'Previous application restored; database not downgraded'
   else
     compose stop api worker caddy || true
-    echo 'First release stopped; undo new Nginx location if enabled'
+    bash "$release/infra/nginx-route.sh" remove "$release"
+    echo 'First release stopped; new Nginx route removed'
   fi
   exit 1
 }
 trap rollback ERR
 compose run --rm migration
+compose run --rm migration current > "$release/migration-revision.txt"
+docker image inspect "ghcr.io/qianqi7777/itemtalk-api:sha-$sha" \
+  "ghcr.io/qianqi7777/itemtalk-frontend:sha-$sha" \
+  "ghcr.io/qianqi7777/itemtalk-db:sha-$sha" --format '{{join .RepoDigests "\n"}}' > "$release/image-digests.txt"
 compose up -d api worker caddy
+bash "$release/infra/nginx-route.sh" install "$release"
 healthy=false
 for attempt in {1..20}; do
   if health=$(curl --fail --silent --show-error --max-time 10 https://49.233.65.195/itemtalk/api/v1/health); then

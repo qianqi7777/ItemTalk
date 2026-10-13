@@ -23,6 +23,13 @@ dist/
 .vite/
 
 # Python
+.venv/
+.cache/
+.ruff_cache/
+test-results/
+playwright-report/
+*.tsbuildinfo
+.local-data/
 __pycache__/
 *.py[cod]
 *$py.class

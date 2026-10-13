@@ -74,11 +74,95 @@ jobs:
       env:
         DATABASE_URL: postgresql+psycopg://itemtalk:test@localhost:5432/itemtalk_test
         JWT_SECRET: test-secret
+        TEST_DATABASE_URL: postgresql+psycopg://itemtalk:test@localhost:5432/itemtalk_test
         DB_HOST: localhost
         DB_NAME: itemtalk_test
         DB_USER: itemtalk
         DB_PASSWORD: test
       run: uv run pytest -v
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: docker/setup-buildx-action@v3
+    - name: Validate deployment scripts
+      run: bash -n infra/*.sh
+    - name: Validate development Compose
+      run: docker compose -f docker-compose.dev.yml --env-file .env.example config --quiet
+    - name: Build API image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        push: false
+        tags: itemtalk-api:ci
+        cache-from: type=gha,scope=api
+        cache-to: type=gha,mode=max,scope=api
+    - name: Build frontend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        push: false
+        tags: itemtalk-frontend:ci
+        cache-from: type=gha,scope=frontend
+        cache-to: type=gha,mode=max,scope=frontend
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: itemtalk_e2e
+          POSTGRES_USER: itemtalk
+          POSTGRES_PASSWORD: test
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://itemtalk:test@localhost:5432/itemtalk_e2e
+      MODEL_PROVIDER: mock
+      STORAGE_BACKEND: local
+      AUTH_COOKIE_SECURE: 'false'
+      AUTH_COOKIE_PATH: /
+      APP_PUBLIC_URL: http://localhost:5173/
+      RATE_LIMIT_PER_MINUTE: '10000'
+      DAILY_MODEL_CALL_LIMIT: '10000'
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - uses: astral-sh/setup-uv@v6
+    - name: Install and migrate
+      working-directory: backend
+      run: |
+        uv sync --locked
+        uv run alembic upgrade head
+    - name: Start API and worker
+      working-directory: backend
+      run: |
+        uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/itemtalk-api.log 2>&1 &
+        uv run python -m app.worker > /tmp/itemtalk-worker.log 2>&1 &
+        for attempt in {1..30}; do
+          if curl --fail --silent http://127.0.0.1:8000/api/v1/health >/dev/null; then exit 0; fi
+          sleep 1
+        done
+        exit 1
+    - name: Browser E2E
+      working-directory: frontend
+      run: |
+        npm ci
+        npx playwright install --with-deps chromium
+        npm run test:e2e
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: mvp-browser-results
+        path: frontend/test-results/
 'on':
   pull_request:
     branches:
