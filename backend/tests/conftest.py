@@ -21,7 +21,11 @@ os.environ.update(
     }
 )
 
-from app.config import settings  # noqa: E402
+from app.config import Settings, settings  # noqa: E402
+
+# 测试不读取开发者本机的真实密钥文件；测试参数必须来自显式环境或测试配置。
+Settings.model_config["env_file"] = None
+
 from app.db import engine, execute, transaction  # noqa: E402
 from app.main import app  # noqa: E402
 

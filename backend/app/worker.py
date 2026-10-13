@@ -95,6 +95,8 @@ def run_once(requested_id=None):
             "parse": parse_task,
             "embed": embed_task,
             "asset_cleanup": cleanup_asset,
+            "manual": generate_manual,
+            "memory_extract": extract_memories,
         }
         handler = handlers.get(job["job_type"])
         if not handler:
@@ -111,6 +113,18 @@ def run_once(requested_id=None):
         )
         fail(job, error.message if isinstance(error, DomainError) else "任务处理失败，请重试")
     return True
+
+
+def generate_manual(job):
+    from app.services.manuals import generate
+
+    generate(job)
+
+
+def extract_memories(job):
+    from app.services.memories import extract
+
+    extract(job)
 
 
 def cleanup_asset(job):

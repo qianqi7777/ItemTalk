@@ -1823,6 +1823,81 @@ a:focus-visible {
     font-size: 9px;
   }
 }
+.manual-panel,
+.memory-panel,
+.conversation-history {
+  padding: 18px;
+  margin-block: 16px;
+  border: 1px solid var(--border, #e3e8f2);
+  border-radius: 12px;
+  background: #fff;
+}
+.manual-content {
+  margin-top: 16px;
+}
+.memory-content {
+  margin-top: 14px;
+}
+.memory-card {
+  padding: 14px;
+  margin-block: 10px;
+  background: #f6f8fc;
+  border-radius: 10px;
+}
+.manual-layout {
+  display: grid;
+  grid-template-columns: minmax(160px, 230px) minmax(0, 1fr);
+  gap: 24px;
+}
+.manual-layout nav ul {
+  list-style: none;
+  padding-left: 12px;
+}
+.manual-layout nav button {
+  padding: 10px;
+  border: 0;
+  background: transparent;
+  color: #354052;
+  cursor: pointer;
+  text-align: left;
+}
+.manual-layout nav button[aria-pressed='true'] {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-radius: 8px;
+}
+.manual-layout article {
+  min-width: 0;
+}
+.message-feedback {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e3e8f2;
+}
+.feedback-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.conversation-toolbar {
+  margin-bottom: 12px;
+}
+.conversation-history form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.conversation-history > button {
+  display: block;
+  margin-block: 8px;
+  max-width: 100%;
+  overflow: hidden;
+}
+@media (max-width: 700px) {
+  .manual-layout {
+    grid-template-columns: 1fr;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

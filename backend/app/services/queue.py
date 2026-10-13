@@ -183,6 +183,12 @@ def fail(job, error):
             return
         if current["attempts"] >= current["max_attempts"]:
             finish(connection, job, "failed", error)
+            if job["job_type"] == "manual":
+                execute(
+                    connection,
+                    "UPDATE manuals SET status='failed' WHERE id=:id",
+                    id=job["payload"]["manualId"],
+                )
             if job["job_type"] == "identify":
                 execute(
                     connection,

@@ -11,7 +11,15 @@ import {
 import { api, newKey, post, streamAnswer } from '../services/api';
 import { CitationCard } from '../components/CitationCard';
 import { MessageContent } from '../components/MessageContent';
-import type { Citation, Message, ProductInstance, Run } from '../types/api';
+import type {
+  Citation,
+  Conversation,
+  Message,
+  MessagePage,
+  ProductInstance,
+  Run,
+} from '../types/api';
+import { MessageFeedback } from '../features/feedback/MessageFeedback';
 import { SpeechInput } from '../features/speech/SpeechInput';
 
 export function ChatPanel({
@@ -25,9 +33,15 @@ export function ChatPanel({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<Conversation[]>([]);
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [messageCursor, setMessageCursor] = useState<string | null>(null);
   useEffect(() => {
-    onBusyChange?.(busy);
-  }, [busy, onBusyChange]);
+    onBusyChange?.(busy || loadingHistory);
+  }, [busy, loadingHistory, onBusyChange]);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
@@ -47,8 +61,60 @@ export function ChatPanel({
   }, [messages, draft]);
   useEffect(() => () => controller.current?.abort(), []);
 
+  const loadHistory = async (append = false) => {
+    setLoadingHistory(true);
+    try {
+      const page = await api<{
+        items: Conversation[];
+        nextCursor: string | null;
+      }>(
+        `/conversations?instanceId=${product.id}&q=${encodeURIComponent(historyQuery)}${append && historyCursor ? `&cursor=${historyCursor}` : ''}`,
+      );
+      setHistory((old) =>
+        append ? [...old, ...(page.items || [])] : page.items || [],
+      );
+      setHistoryCursor(page.nextCursor || null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '历史会话加载失败');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+  const chooseConversation = async (id: string) => {
+    // 恢复服务端会话ID与消息页，继续提问时沿用原会话，避免历史断成两段。
+    setLoadingHistory(true);
+    setError('');
+    try {
+      const page = await api<MessagePage>(`/conversations/${id}/messages`);
+      setConversation(id);
+      setMessages(page.items);
+      setMessageCursor(page.nextCursor);
+      setRunId('');
+      setRetryInput('');
+      setHistoryOpen(false);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '会话恢复失败');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+  const loadOlder = async () => {
+    setLoadingHistory(true);
+    try {
+      const page = await api<MessagePage>(
+        `/conversations/${conversation}/messages?cursor=${messageCursor}`,
+      );
+      setMessages((old) => [...page.items, ...old]);
+      setMessageCursor(page.nextCursor);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '消息加载失败');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   const send = async (question = input, retry = false) => {
-    if (!question.trim()) return;
+    if (!question.trim() || busy || loadingHistory) return;
     setBusy(true);
     setError('');
     setDraft('');
@@ -145,7 +211,80 @@ export function ChatPanel({
           依据资料回答
         </span>
       </div>
+      <div className="conversation-toolbar inline-actions">
+        <Button
+          disabled={busy || loadingHistory}
+          onClick={() => {
+            setHistoryOpen(!historyOpen);
+            if (!historyOpen) void loadHistory();
+          }}
+        >
+          历史会话
+        </Button>
+        <Button
+          disabled={busy || loadingHistory}
+          onClick={() => {
+            setConversation('');
+            setMessages([]);
+            setMessageCursor(null);
+            setRunId('');
+            setRetryInput('');
+            setError('');
+            setHistoryOpen(false);
+          }}
+        >
+          新建会话
+        </Button>
+      </div>
+      {historyOpen && (
+        <aside className="conversation-history" aria-label="历史会话">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void loadHistory();
+            }}
+          >
+            <Input
+              aria-label="搜索历史会话"
+              value={historyQuery}
+              onChange={(event) => setHistoryQuery(event.target.value)}
+              placeholder="搜索标题或问题"
+            />
+            <Button htmlType="submit" disabled={busy} loading={loadingHistory}>
+              搜索
+            </Button>
+          </form>
+          {!history.length && !loadingHistory && <p>还没有历史会话。</p>}
+          {history.map((item) => (
+            <Button
+              key={item.id}
+              disabled={busy || loadingHistory}
+              onClick={() => void chooseConversation(item.id)}
+            >
+              {item.title || '未命名会话'}
+            </Button>
+          ))}
+          {historyCursor && (
+            <Button
+              disabled={busy}
+              loading={loadingHistory}
+              onClick={() => void loadHistory(true)}
+            >
+              更多会话
+            </Button>
+          )}
+        </aside>
+      )}
       <div className="messages" aria-live="polite">
+        {messageCursor && (
+          <Button
+            disabled={busy}
+            loading={loadingHistory}
+            onClick={() => void loadOlder()}
+          >
+            加载更早消息
+          </Button>
+        )}
         {!messages.length && (
           <div className="chat-empty">
             <span className="assistant-orb">
@@ -193,6 +332,9 @@ export function ChatPanel({
                 />
               ))}
             </div>
+            {message.role === 'assistant' && (
+              <MessageFeedback message={message} />
+            )}
           </article>
         ))}
         {busy && (
@@ -265,7 +407,7 @@ export function ChatPanel({
           onChange={(event) => setInput(event.target.value)}
           autoSize={{ minRows: 2, maxRows: 5 }}
           maxLength={10000}
-          disabled={busy}
+          disabled={busy || loadingHistory}
         />
         {busy ? (
           <Button
@@ -280,7 +422,7 @@ export function ChatPanel({
             aria-label="发送问题"
             type="primary"
             htmlType="submit"
-            disabled={!input.trim()}
+            disabled={!input.trim() || loadingHistory}
             icon={<ArrowUp size={18} />}
           >
             发送

@@ -58,6 +58,15 @@ def message_view(connection, row):
         "createdAt": row["created_at"].isoformat(),
         "citations": metadata,
         "assets": [asset_view(asset) for asset in assets],
+        "feedback": one(
+            connection,
+            (
+                'SELECT feedback_type AS "feedbackType",note FROM message_feedback '
+                "WHERE message_id=:m AND user_id=:u"
+            ),
+            m=row["id"],
+            u=row["user_id"],
+        ),
     }
 
 
@@ -142,7 +151,8 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         connection,
         (
             "INSERT INTO "
-            "assistant_runs(conversation_id,user_id,status,idempotency_key,request_hash,input_message_id,retry_of_run_id,started_at)"
+            "assistant_runs(conversation_id,user_id,status,idempotency_key,requ"
+            "est_hash,input_message_id,retry_of_run_id,started_at)"
             " VALUES (:c,:u,'running',:key,:hash,:input,:retry,now()) RETURNING *"
         ),
         c=conversation_id,
@@ -234,6 +244,7 @@ def citation_for(chunk, rank):
 def complete_run(run, on_token=None):
     """外部调用在事务外执行；结果写回时再次确认账号、实例和运行仍有效。"""
     gateway = ModelGateway()
+    gap_summary = None
     try:
         with transaction() as connection:
             conversation = owned(
@@ -245,6 +256,9 @@ def complete_run(run, on_token=None):
             message = one(
                 connection, "SELECT * FROM messages WHERE id=:id", id=run["input_message_id"]
             )
+            from app.services.memories import confirmed
+
+            user_memories = confirmed(connection, run["user_id"], instance["id"])
             assets = many(
                 connection,
                 (
@@ -271,6 +285,9 @@ def complete_run(run, on_token=None):
             vector = gateway.embed([question], run["user_id"])[0]
             chunks = retrieve(instance["product_model_id"], question, vector)
             if not chunks:
+                from app.services.gaps import summary_for
+
+                gap_summary = summary_for(gateway, question, run["user_id"])
                 answer, citations = (
                     "目前没有足够的已核验资料支持回答。请补充准确型号或等待资料核验完成。",
                     [],
@@ -282,7 +299,9 @@ def complete_run(run, on_token=None):
                 ]
                 if on_token:
                     pieces = []
-                    for piece in gateway.answer_stream(question, evidence, run["user_id"]):
+                    for piece in gateway.answer_stream(
+                        question, evidence, run["user_id"], memories=user_memories
+                    ):
                         # 取消/超时后不继续向客户端输出，也不提交过期回答。
                         with transaction() as connection:
                             current = one(
@@ -296,7 +315,9 @@ def complete_run(run, on_token=None):
                         on_token(piece)
                     answer = "".join(pieces)
                 else:
-                    answer = gateway.answer(question, evidence, run["user_id"])
+                    answer = gateway.answer(
+                        question, evidence, run["user_id"], memories=user_memories
+                    )
                 cited = {int(number) for number in re.findall(r"\[(\d+)\]", answer)}
                 if not cited or any(number < 1 or number > len(chunks) for number in cited):
                     answer, citations = "本次回答未能建立有效证据引用，请重新提问或补充型号。", []
@@ -311,6 +332,13 @@ def complete_run(run, on_token=None):
             )
             if current["status"] != "running":
                 return run_view(connection, current)
+            if gap_summary:
+                from app.services.gaps import record
+
+                record(connection, instance["product_model_id"], gap_summary)
+            from app.services.memories import schedule as schedule_memories
+
+            schedule_memories(connection, message, instance["id"])
             output = one(
                 connection,
                 (
@@ -345,6 +373,15 @@ def complete_run(run, on_token=None):
                 ),
                 id=run["id"],
                 model=settings().chat_model,
+            )
+            execute(
+                connection,
+                (
+                    "UPDATE conversations SET title=COALESCE(title,:title),updated_at=n"
+                    "ow() WHERE id=:id"
+                ),
+                title=(message["content"] or "附件问答")[:100],
+                id=run["conversation_id"],
             )
             return {
                 "status": "completed",

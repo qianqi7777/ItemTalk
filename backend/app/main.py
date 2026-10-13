@@ -17,6 +17,7 @@ from app.schemas import (
     ConfirmRequest,
     ConversationRequest,
     Credentials,
+    FeedbackRequest,
     IdentifyRequest,
     InstanceRequest,
     KnowledgeRequest,
@@ -34,7 +35,7 @@ from app.security import (
     token_for,
     verify_password,
 )
-from app.services import chat, products, uploads
+from app.services import chat, feedback, manuals, memories, products, uploads
 from app.services.transcription import transcribe_asset
 from app.speech import asr_enabled
 from app.storage import Storage
@@ -199,6 +200,24 @@ def logout(response: Response, current=Depends(user)):
 @app.get("/api/v1/me")
 def me(current=Depends(user)):
     return user_view(current)
+
+
+@app.get("/api/v1/me/memories")
+def list_memories(current=Depends(user), instanceId: UUID | None = None):
+    with transaction() as connection:
+        return memories.list_for(connection, current["id"], instanceId)
+
+
+@app.post("/api/v1/me/memories/{memory_id}/confirm")
+def confirm_memory(memory_id: UUID, current=Depends(user)):
+    with transaction() as connection:
+        return memories.confirm(connection, memory_id, current["id"])
+
+
+@app.delete("/api/v1/me/memories/{memory_id}", status_code=204)
+def delete_memory(memory_id: UUID, current=Depends(user)):
+    with transaction() as connection:
+        memories.delete(connection, memory_id, current["id"])
 
 
 @app.post("/api/v1/assets/presign", status_code=201)
@@ -468,6 +487,140 @@ def create_conversation(body: ConversationRequest, current=Depends(user)):
             title=body.title,
         )
         return chat.conversation_view(row)
+
+
+@app.get("/api/v1/conversations")
+def list_conversations(
+    current=Depends(user),
+    limit: int = Query(default=30, ge=1, le=100),
+    cursor: UUID | None = None,
+    instanceId: UUID | None = None,
+    q: str | None = Query(default=None, max_length=200),
+):
+    with transaction() as connection:
+        if instanceId:
+            products.owned(connection, "instances", instanceId, current["id"])
+        position = (
+            products.owned(connection, "conversations", cursor, current["id"]) if cursor else None
+        )
+        rows = many(
+            connection,
+            "SELECT c.* FROM conversations c JOIN user_product_instances i ON i"
+            ".id=c.user_product_instance_id "
+            "WHERE c.user_id=:u AND c.deleted_at IS NULL AND i.deleted_at IS NULL "
+            "AND (CAST(:instance AS uuid) IS NULL OR c.user_product_instance_id"
+            "=:instance) "
+            "AND (CAST(:date AS timestamptz) IS NULL OR (c.updated_at,c.id)<(:d"
+            "ate,:cursor)) "
+            "AND (:search='' OR strpos(lower(COALESCE(c.title,'')),lower(:search))>0 "
+            "OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id "
+            "AND strpos(lower(COALESCE(m.content,'')),lower(:search))>0)) "
+            "ORDER BY c.updated_at DESC,c.id DESC LIMIT :count",
+            u=current["id"],
+            instance=instanceId,
+            date=position["updated_at"] if position else None,
+            cursor=cursor,
+            search=(q or "").strip(),
+            count=limit + 1,
+        )
+        return {
+            "items": [chat.conversation_view(row) for row in rows[:limit]],
+            "nextCursor": str(rows[limit - 1]["id"]) if len(rows) > limit else None,
+        }
+
+
+@app.delete("/api/v1/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: UUID, current=Depends(user)):
+    with transaction() as connection:
+        products.owned(connection, "conversations", conversation_id, current["id"])
+        execute(
+            connection, "SELECT id FROM conversations WHERE id=:id FOR UPDATE", id=conversation_id
+        )
+        execute(
+            connection,
+            "UPDATE conversations SET deleted_at=now(),status='archived' WHERE id=:id",
+            id=conversation_id,
+        )
+        execute(
+            connection,
+            (
+                "UPDATE assistant_runs SET status='cancelled',finished_at=now() WHE"
+                "RE conversation_id=:id AND status='running'"
+            ),
+            id=conversation_id,
+        )
+
+
+@app.post("/api/v1/messages/{message_id}/feedback", status_code=204)
+def submit_message_feedback(message_id: UUID, body: FeedbackRequest, current=Depends(user)):
+    with transaction() as connection:
+        feedback.submit(connection, message_id, current["id"], body)
+
+
+@app.get("/api/v1/products/{model_id}/manual")
+def get_manual(model_id: UUID, current=Depends(user), instanceId: UUID | None = None):
+    with transaction() as connection:
+        return manuals.get_manual(connection, model_id, current["id"], instanceId)
+
+
+@app.get("/api/v1/manuals/{manual_id}/sections/{section_id}")
+def get_manual_section(manual_id: UUID, section_id: UUID, current=Depends(user)):
+    with transaction() as connection:
+        manuals.authorized(connection, manual_id, current["id"])
+        section = one(
+            connection,
+            "SELECT * FROM manual_sections WHERE id=:id AND manual_id=:m",
+            id=section_id,
+            m=manual_id,
+        )
+        if not section:
+            missing()
+        return manuals.section_view(connection, section)
+
+
+@app.post("/api/v1/products/{model_id}/manual-jobs", status_code=202)
+def create_manual_job(
+    model_id: UUID,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+    retry: UUID | None = Header(default=None, alias="Retry-Of"),
+):
+    with transaction() as connection:
+        instance = one(
+            connection,
+            (
+                "SELECT * FROM user_product_instances WHERE user_id=:u AND product_"
+                "model_id=:m AND deleted_at IS NULL LIMIT 1"
+            ),
+            u=current["id"],
+            m=model_id,
+        )
+        if not instance and not current["is_admin"]:
+            missing()
+        operation = f"products/{model_id}/manual-jobs"
+        body = {"retry": str(retry) if retry else None}
+        previous = idempotent(connection, current["id"], operation, key, body)
+        if previous:
+            return previous["response_snapshot"]
+        manual = manuals.schedule(connection, model_id, retry)
+        if not manual:
+            raise DomainError(422, "EVIDENCE_INSUFFICIENT", "资料核验完成后才能生成说明书")
+        if instance:
+            execute(
+                connection,
+                (
+                    "INSERT INTO job_request_links(job_id,user_id,user_product_instance"
+                    "_id) VALUES (:j,:u,:i) ON CONFLICT DO NOTHING"
+                ),
+                j=manual["job_id"],
+                u=current["id"],
+                i=instance["id"],
+            )
+        result = products.job_view(
+            one(connection, "SELECT * FROM jobs WHERE id=:id", id=manual["job_id"])
+        )
+        remember(connection, current["id"], operation, key, body, manual["job_id"], result, 202)
+        return result
 
 
 @app.get("/api/v1/conversations/{conversation_id}")

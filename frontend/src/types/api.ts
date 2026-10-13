@@ -61,6 +61,54 @@ export interface Message {
   citations: Citation[];
   assets?: Asset[];
   runId?: string | null;
+  feedback?: {
+    feedbackType: 'helpful' | 'incorrect';
+    note: string | null;
+  } | null;
+}
+export interface Conversation {
+  id: string;
+  title: string | null;
+  userProductInstanceId: string;
+  status: string;
+  createdAt: string;
+}
+export interface MessagePage {
+  items: Message[];
+  nextCursor: string | null;
+}
+export interface ManualSection {
+  id: string;
+  parentId: string | null;
+  sectionKey: string;
+  title: string;
+  sortOrder: number;
+  body: string | null;
+  generationStatus: string;
+  citations: Citation[];
+}
+export interface Manual {
+  id: string;
+  status: string;
+  version: number;
+  jobId: string | null;
+  sections: ManualSection[];
+  latestBuild?: {
+    id: string;
+    version: number;
+    status: string;
+    jobId: string | null;
+  } | null;
+}
+export interface Memory {
+  id: string;
+  memoryType: 'preference' | 'product_fact' | 'resume_summary';
+  scope: 'global' | 'instance';
+  userProductInstanceId: string | null;
+  content: string;
+  consentStatus: 'pending' | 'confirmed' | 'revoked';
+  confirmedAt: string | null;
+  expiresAt: string | null;
 }
 export interface Run {
   id: string;

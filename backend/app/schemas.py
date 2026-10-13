@@ -111,3 +111,23 @@ class Candidate(ProvidedModel):
 class IdentificationOutput(StrictModel):
     candidates: list[Candidate] = Field(max_length=5)
     clarification: str | None = Field(default=None, max_length=1000)
+
+
+class FeedbackRequest(StrictModel):
+    feedbackType: Literal["helpful", "incorrect"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class GapIntent(StrictModel):
+    category: Literal[
+        "setup", "power", "connectivity", "features", "maintenance", "troubleshooting", "other"
+    ]
+
+
+class ExtractedMemory(StrictModel):
+    memoryType: Literal["preference", "product_fact"]
+    content: str = Field(min_length=1, max_length=1200)
+
+
+class MemoryExtraction(StrictModel):
+    memories: list[ExtractedMemory] = Field(default_factory=list, max_length=5)

@@ -321,6 +321,10 @@ def research(job):
             "succeeded" if published else "partial_success",
             None if published else "没有找到满足型号、地区和官方来源要求的资料，请完善可信来源配置",
         )
+        if published:
+            from app.services.manuals import schedule
+
+            schedule(connection, model_id)
 
 
 def execute_subtask(parent, job_type, payload, handler):

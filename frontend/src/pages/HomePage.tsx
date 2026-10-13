@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Input, Spin, Upload } from 'antd';
+import { Alert, Button, Input, Select, Spin, Upload } from 'antd';
 import {
   Check,
   Camera,
@@ -24,12 +24,15 @@ import { KnowledgeProgress } from '../features/products/KnowledgeProgress';
 import { usePolling } from '../hooks/usePolling';
 import { ChatPanel } from './ChatPanel';
 import { DeviceScene } from '../components/DeviceScene';
+import { ManualPanel } from '../features/manuals/ManualPanel';
+import { MemoryPanel } from '../features/memories/MemoryPanel';
 
 export function HomePage() {
   const [input, setInput] = useState('');
   const [asset, setAsset] = useState<Asset>();
   const [attempt, setAttempt] = useState<Identification>();
   const [product, setProduct] = useState<ProductInstance>();
+  const [products, setProducts] = useState<ProductInstance[]>([]);
   const [job, setJob] = useState<Job>();
   const [busy, setBusy] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
@@ -40,7 +43,10 @@ export function HomePage() {
   const [region, setRegion] = useState('');
   useEffect(() => {
     void api<{ items: ProductInstance[] }>('/me/products')
-      .then((response) => setProduct(response.items[0]))
+      .then((response) => {
+        setProducts(response.items);
+        setProduct(response.items[0]);
+      })
       .catch((error) => setError(error.message));
   }, []);
   const pollAttempt = useCallback(async () => {
@@ -60,6 +66,9 @@ export function HomePage() {
     try {
       const updated = await api<ProductInstance>(`/me/products/${product.id}`);
       setProduct(updated);
+      setProducts((old) =>
+        old.map((item) => (item.id === updated.id ? updated : item)),
+      );
       if (updated.knowledgeJobId)
         setJob(await api<Job>(`/jobs/${updated.knowledgeJobId}`));
     } catch (error) {
@@ -114,6 +123,10 @@ export function HomePage() {
         newKey(),
       );
       setProduct(result);
+      setProducts((old) => [
+        result,
+        ...old.filter((item) => item.id !== result.id),
+      ]);
       setAttempt(undefined);
       setJob(undefined);
     } catch (error) {
@@ -201,6 +214,22 @@ export function HomePage() {
             <KnowledgeProgress product={product} job={job} />
           </div>
           <div className="product-actions">
+            {products.length > 1 && (
+              <Select
+                aria-label="切换产品"
+                value={product.id}
+                disabled={busy || chatBusy}
+                options={products.map((item) => ({
+                  value: item.id,
+                  label: `${item.nickname || item.modelCode} · ${item.brandName}`,
+                }))}
+                onChange={(id) => {
+                  setProduct(products.find((item) => item.id === id));
+                  setJob(undefined);
+                  setError('');
+                }}
+              />
+            )}
             <span>
               <ShieldCheck size={16} aria-hidden="true" />
               {product.identityStatus === 'verified'
@@ -401,11 +430,11 @@ export function HomePage() {
         </div>
       )}
       {product ? (
-        <ChatPanel
-          key={product.id}
-          product={product}
-          onBusyChange={setChatBusy}
-        />
+        <div key={product.id}>
+          <ManualPanel product={product} />
+          <MemoryPanel instanceId={product.id} />
+          <ChatPanel product={product} onBusyChange={setChatBusy} />
+        </div>
       ) : (
         <div className="how-it-works">
           <div>
