@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { api, newKey, post, streamAnswer } from '../services/api';
 import { CitationCard } from '../components/CitationCard';
+import { MessageContent } from '../components/MessageContent';
 import type { Citation, Message, ProductInstance, Run } from '../types/api';
 import { SpeechInput } from '../features/speech/SpeechInput';
 
@@ -176,7 +177,14 @@ export function ChatPanel({
               )}
               {message.role === 'user' ? '你' : '识物说'}
             </span>
-            <p>{message.content}</p>
+            {message.role === 'user' ? (
+              <p>{message.content}</p>
+            ) : (
+              <MessageContent
+                content={message.content || ''}
+                citations={message.citations}
+              />
+            )}
             <div className="citations">
               {message.citations.map((citation) => (
                 <CitationCard
@@ -194,7 +202,9 @@ export function ChatPanel({
               识物说
             </span>
             <div className="answer-draft">
-              {draft || (
+              {draft ? (
+                <MessageContent content={draft} citations={citations} />
+              ) : (
                 <>
                   <Spin size="small" /> 正在检索核验资料…
                 </>
