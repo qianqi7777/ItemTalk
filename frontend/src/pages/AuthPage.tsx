@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Alert, Button, Form, Input, Segmented } from 'antd';
-import { PackageSearch, ShieldCheck } from 'lucide-react';
+import { ArrowUpRight, LockKeyhole, Mail, ShieldCheck } from 'lucide-react';
+import { Brand } from '../components/Brand';
+import { DeviceScene } from '../components/DeviceScene';
 import { post } from '../services/api';
 import { useSession } from '../stores/session';
 
@@ -24,73 +26,95 @@ export function AuthPage() {
   };
   return (
     <main className="auth-layout">
-      <section className="auth-story">
-        <div className="brand">
-          <PackageSearch aria-hidden="true" />
-          <strong>
-            识物说 <small>ItemTalk</small>
-          </strong>
-        </div>
-        <span className="eyebrow">让设备更容易使用</span>
-        <h1>
-          从认识它，
-          <br />
-          到用好它。
-        </h1>
-        <p>
-          拍下产品或铭牌，确认型号，
-          <br />
-          通过已核验的资料，找到有据可查的答案。
-        </p>
-        <div className="trust-note">
-          <ShieldCheck size={20} aria-hidden="true" />
-          每一个可靠答案，都有来源
-        </div>
-      </section>
-      <section className="auth-form">
-        <h2>欢迎来到识物说</h2>
-        <p>为手里的设备，建立专属资料入口。</p>
-        <Segmented
-          value={mode}
-          options={['登录', '注册']}
-          onChange={setMode}
-          block
-        />
-        {error && <Alert title={error} type="error" role="alert" showIcon />}
-        <Form layout="vertical" onFinish={submit} requiredMark={false}>
-          <Form.Item
-            label="邮箱"
-            name="email"
-            rules={[
-              { required: true, type: 'email', message: '请输入有效邮箱' },
-            ]}
-          >
-            <Input autoComplete="email" placeholder="you@example.com" />
-          </Form.Item>
-          <Form.Item
-            label="密码"
-            name="password"
-            rules={[
-              {
-                required: true,
-                min: 8,
-                max: 128,
-                message: '密码需为 8–128 位',
-              },
-            ]}
-          >
-            <Input.Password
-              autoComplete={
-                mode === '登录' ? 'current-password' : 'new-password'
-              }
-              placeholder="至少 8 位字符"
-            />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={busy} block>
-            {mode === '登录' ? '登录并开始' : '注册并开始'}
-          </Button>
-        </Form>
-      </section>
+      <header className="auth-header">
+        <Brand />
+        <span>让每一件设备，都更好用。</span>
+      </header>
+      <div className="auth-content">
+        <section className="auth-story">
+          <span className="story-kicker">
+            <span /> EVERY DEVICE HAS A STORY
+          </span>
+          <h1>
+            认识你的设备，
+            <br />
+            <em>发现更多可能。</em>
+          </h1>
+          <p>
+            拍下产品，确认型号。
+            <br />
+            让复杂的说明书，变成简单的对话。
+          </p>
+          <DeviceScene />
+          <div className="trust-note">
+            <ShieldCheck size={20} aria-hidden="true" />
+            每一个可靠答案，都有来源。
+          </div>
+        </section>
+        <section className="auth-form">
+          <span className="form-kicker">YOUR DEVICE, UNDERSTOOD.</span>
+          <h2>{mode === '登录' ? '欢迎回来。' : '你好，新朋友。'}</h2>
+          <p>
+            {mode === '登录'
+              ? '你的设备助手，已经准备好了。'
+              : '为手里的设备，建立专属资料入口。'}
+          </p>
+          <Segmented
+            value={mode}
+            options={['登录', '注册']}
+            onChange={setMode}
+            block
+          />
+          {error && <Alert title={error} type="error" role="alert" showIcon />}
+          <Form layout="vertical" onFinish={submit} requiredMark={false}>
+            <Form.Item
+              label="邮箱"
+              name="email"
+              rules={[
+                { required: true, type: 'email', message: '请输入有效邮箱' },
+              ]}
+            >
+              <Input
+                prefix={<Mail size={17} aria-hidden="true" />}
+                autoComplete="email"
+                placeholder="you@example.com"
+              />
+            </Form.Item>
+            <Form.Item
+              label="密码"
+              name="password"
+              rules={[
+                {
+                  required: true,
+                  min: 8,
+                  max: 128,
+                  message: '密码需为 8–128 位',
+                },
+              ]}
+            >
+              <Input.Password
+                prefix={<LockKeyhole size={17} aria-hidden="true" />}
+                autoComplete={
+                  mode === '登录' ? 'current-password' : 'new-password'
+                }
+                placeholder="至少 8 位字符"
+              />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" loading={busy} block>
+              {mode === '登录' ? '登录并开始' : '注册并开始'}
+              <ArrowUpRight size={18} aria-hidden="true" />
+            </Button>
+          </Form>
+          <div className="auth-assurance">
+            <ShieldCheck size={15} aria-hidden="true" />
+            <span>产品照片保持私有，答案依据核验资料。</span>
+          </div>
+        </section>
+      </div>
+      <footer className="auth-footer">
+        <span>© {new Date().getFullYear()} ItemTalk 识物说</span>
+        <span>从认识它，到用好它。</span>
+      </footer>
     </main>
   );
 }

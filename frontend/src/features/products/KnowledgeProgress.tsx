@@ -20,7 +20,7 @@ export function KnowledgeProgress({
 }) {
   const label = knowledgeLabels[product.knowledgeStatus] || '正在处理';
   return (
-    <div aria-live="polite">
+    <div className="knowledge-progress" aria-live="polite">
       <Tag color={product.knowledgeStatus === 'ready' ? 'green' : 'gold'}>
         {label}
       </Tag>

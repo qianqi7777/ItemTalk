@@ -2,10 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Input, Spin, Upload } from 'antd';
 import {
   Check,
+  Camera,
   ChevronRight,
   FileImage,
   PackageSearch,
   ShieldCheck,
+  Sparkles,
+  RotateCcw,
   Upload as UploadIcon,
 } from 'lucide-react';
 import { api, newKey, post, upload } from '../services/api';
@@ -20,6 +23,7 @@ import { CandidateList } from '../features/products/CandidateList';
 import { KnowledgeProgress } from '../features/products/KnowledgeProgress';
 import { usePolling } from '../hooks/usePolling';
 import { ChatPanel } from './ChatPanel';
+import { DeviceScene } from '../components/DeviceScene';
 
 export function HomePage() {
   const [input, setInput] = useState('');
@@ -28,6 +32,7 @@ export function HomePage() {
   const [product, setProduct] = useState<ProductInstance>();
   const [job, setJob] = useState<Job>();
   const [busy, setBusy] = useState(false);
+  const [chatBusy, setChatBusy] = useState(false);
   const [error, setError] = useState('');
   const [manual, setManual] = useState(false);
   const [brand, setBrand] = useState('');
@@ -135,12 +140,44 @@ export function HomePage() {
       setBusy(false);
     }
   };
+  const restartIdentification = () => {
+    setProduct(undefined);
+    setAttempt(undefined);
+    setAsset(undefined);
+    setJob(undefined);
+    setInput('');
+    setManual(false);
+    setError('');
+  };
   return (
-    <div className="workspace">
+    <div className="workspace" id="workspace">
       <header className="page-heading">
-        <span className="eyebrow">你的设备，值得被了解</span>
-        <h1>{product ? '用好你的每一件设备' : '先拍一张，我来帮你认出它'}</h1>
-        <p>确认准确型号，查找官方资料，让每一个答案都有据可查。</p>
+        <div>
+          <span className="eyebrow">你的设备，值得被了解</span>
+          <h1>
+            {product ? '用好你的每一件设备。' : '设备的答案，从这里开始。'}
+          </h1>
+          <p>
+            {product
+              ? '少一点翻找，多一点明白。和你的设备聊聊吧。'
+              : '从一张照片开始，把复杂的使用说明变成简单的对话。'}
+          </p>
+        </div>
+        {product ? (
+          <Button
+            className="restart-button"
+            icon={<RotateCcw size={16} aria-hidden="true" />}
+            onClick={restartIdentification}
+            disabled={busy || chatBusy}
+          >
+            重新识别
+          </Button>
+        ) : (
+          <span className="heading-note">
+            <Sparkles size={17} aria-hidden="true" />
+            为每一次好奇，找到答案
+          </span>
+        )}
       </header>
       {error && (
         <Alert
@@ -157,11 +194,10 @@ export function HomePage() {
           <div className="product-icon">
             <PackageSearch size={32} aria-hidden="true" />
           </div>
-          <div>
+          <div className="product-identity">
             <span className="eyebrow">当前产品</span>
-            <h2>
-              {product.brandName} · {product.modelCode}
-            </h2>
+            <span className="product-brand">{product.brandName}</span>
+            <h2>{product.modelCode}</h2>
             <KnowledgeProgress product={product} job={job} />
           </div>
           <div className="product-actions">
@@ -189,144 +225,187 @@ export function HomePage() {
         </section>
       )}
       {!product && (
-        <section className="identify-card">
-          <div className="section-heading">
-            <PackageSearch size={20} aria-hidden="true" />
-            <h2>认识你的产品</h2>
-            <span>照片或文字都可以</span>
-          </div>
-          <Upload.Dragger
-            accept="image/jpeg,image/png,image/webp"
-            showUploadList={false}
-            disabled={busy}
-            beforeUpload={(file) => {
-              if (file.size > 10 * 1024 * 1024) {
-                setError('图片需小于 10 MB');
+        <div className="recognition-layout">
+          <section className="identify-card">
+            <div className="section-heading">
+              <span className="section-icon">
+                <Camera size={20} aria-hidden="true" />
+              </span>
+              <div>
+                <h2>认识你的产品</h2>
+                <p>拍下设备，或者告诉我它的型号。</p>
+              </div>
+              <span className="step-counter">STEP 01</span>
+            </div>
+            <Upload.Dragger
+              accept="image/jpeg,image/png,image/webp"
+              showUploadList={false}
+              disabled={busy}
+              beforeUpload={(file) => {
+                if (file.size > 10 * 1024 * 1024) {
+                  setError('图片需小于 10 MB');
+                  return false;
+                }
+                setBusy(true);
+                setError('');
+                void upload(file)
+                  .then(setAsset)
+                  .catch((error) => setError(error.message))
+                  .finally(() => setBusy(false));
                 return false;
-              }
-              setBusy(true);
-              setError('');
-              void upload(file)
-                .then(setAsset)
-                .catch((error) => setError(error.message))
-                .finally(() => setBusy(false));
-              return false;
-            }}
-          >
-            <div className="upload-visual">
-              {asset?.readUrl ? (
-                <img src={asset.readUrl} alt="已上传的产品照片" />
-              ) : (
-                <UploadIcon size={28} aria-hidden="true" />
-              )}
-            </div>
-            <h3>{asset ? '照片已上传' : '拖入产品照片，或点击上传'}</h3>
-            <p>拍清产品外观或铭牌，识别更准确</p>
-            <small>JPG、PNG、WebP · 最大 10 MB</small>
-          </Upload.Dragger>
-          <label className="text-label" htmlFor="product-description">
-            或者，描述一下你的产品
-          </label>
-          <Input.TextArea
-            id="product-description"
-            placeholder="例如：品牌、型号、铭牌上的文字…"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            autoSize={{ minRows: 3 }}
-            maxLength={10000}
-          />
-          <div className="identify-footer">
-            <small>
-              <ShieldCheck size={14} aria-hidden="true" />
-              照片保持私有，仅用于识别；将发送至模型服务处理。
-            </small>
-            <Button
-              type="primary"
-              loading={busy}
-              disabled={!asset && !input.trim()}
-              onClick={() => void identify()}
+              }}
             >
-              开始识别
-              <ChevronRight size={16} />
-            </Button>
-          </div>
-          {attempt && (
-            <div className="identification-result" aria-live="polite">
-              {['queued', 'processing'].includes(attempt.status) && (
-                <div>
-                  <Spin size="small" /> 正在识别产品，请稍候…
-                </div>
-              )}
-              {attempt.status === 'failed' && (
-                <Alert
-                  title={attempt.clarification || '识别失败，请补充信息后重试'}
-                  type="error"
-                  showIcon
-                />
-              )}
-              {attempt.status === 'waiting_for_user' && (
-                <>
-                  <div className="section-heading">
-                    <Check size={20} aria-hidden="true" />
-                    <h2>请确认准确型号</h2>
-                  </div>
-                  <p>用户确认后仍需官方来源核验，才会进入公共资料库。</p>
-                  {attempt.clarification && (
-                    <Alert
-                      title={attempt.clarification}
-                      type="warning"
-                      showIcon
-                    />
-                  )}
-                  <CandidateList
-                    candidates={attempt.candidates}
-                    busy={busy}
-                    onConfirm={(candidate) => void confirm(candidate)}
-                  />
-                  <Button type="link" onClick={() => setManual(!manual)}>
-                    不在列表中？手动输入型号
-                  </Button>
-                  {manual && (
-                    <div className="manual-model">
-                      <Input
-                        aria-label="品牌"
-                        placeholder="品牌"
-                        value={brand}
-                        onChange={(event) => setBrand(event.target.value)}
-                        maxLength={120}
-                      />
-                      <Input
-                        aria-label="型号"
-                        placeholder="准确型号"
-                        value={code}
-                        onChange={(event) => setCode(event.target.value)}
-                        maxLength={160}
-                      />
-                      <Input
-                        aria-label="地区"
-                        placeholder="地区（可选，如 CN）"
-                        value={region}
-                        onChange={(event) => setRegion(event.target.value)}
-                        maxLength={40}
-                      />
-                      <Button
-                        type="primary"
-                        disabled={!brand.trim() || !code.trim()}
-                        loading={busy}
-                        onClick={() => void confirm()}
-                      >
-                        确认手动型号
-                      </Button>
-                    </div>
-                  )}
-                </>
-              )}
+              <div className="upload-visual">
+                {asset?.readUrl ? (
+                  <img src={asset.readUrl} alt="已上传的产品照片" />
+                ) : (
+                  <Camera size={35} strokeWidth={1.5} aria-hidden="true" />
+                )}
+              </div>
+              <h3>{asset ? '照片已上传' : '把你的设备，放进这里'}</h3>
+              <p>拖入产品照片，或点击选择图片</p>
+              <span className="upload-prompt">
+                <UploadIcon size={15} aria-hidden="true" />
+                {asset ? '更换照片' : '选择照片'}
+              </span>
+              <small>JPG、PNG、WebP · 最大 10 MB</small>
+            </Upload.Dragger>
+            <div className="input-divider">
+              <span>也可以用文字开始</span>
             </div>
-          )}
-        </section>
+            <label className="text-label" htmlFor="product-description">
+              或者，描述一下你的产品
+            </label>
+            <Input.TextArea
+              id="product-description"
+              placeholder="例如：Sony WH-1000XM5，或者铭牌上看到的品牌和型号…"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              autoSize={{ minRows: 3 }}
+              maxLength={10000}
+            />
+            <div className="identify-footer">
+              <small>
+                <ShieldCheck size={14} aria-hidden="true" />
+                照片保持私有，仅用于识别；将发送至模型服务处理。
+              </small>
+              <Button
+                type="primary"
+                loading={busy}
+                disabled={!asset && !input.trim()}
+                onClick={() => void identify()}
+              >
+                开始识别
+                <ChevronRight size={16} />
+              </Button>
+            </div>
+            {attempt && (
+              <div className="identification-result" aria-live="polite">
+                {['queued', 'processing'].includes(attempt.status) && (
+                  <div>
+                    <Spin size="small" /> 正在识别产品，请稍候…
+                  </div>
+                )}
+                {attempt.status === 'failed' && (
+                  <Alert
+                    title={
+                      attempt.clarification || '识别失败，请补充信息后重试'
+                    }
+                    type="error"
+                    showIcon
+                  />
+                )}
+                {attempt.status === 'waiting_for_user' && (
+                  <>
+                    <div className="section-heading">
+                      <Check size={20} aria-hidden="true" />
+                      <h2>请确认准确型号</h2>
+                    </div>
+                    <p>用户确认后仍需官方来源核验，才会进入公共资料库。</p>
+                    {attempt.clarification && (
+                      <Alert
+                        title={attempt.clarification}
+                        type="warning"
+                        showIcon
+                      />
+                    )}
+                    <CandidateList
+                      candidates={attempt.candidates}
+                      busy={busy}
+                      onConfirm={(candidate) => void confirm(candidate)}
+                    />
+                    <Button type="link" onClick={() => setManual(!manual)}>
+                      不在列表中？手动输入型号
+                    </Button>
+                    {manual && (
+                      <div className="manual-model">
+                        <Input
+                          aria-label="品牌"
+                          placeholder="品牌"
+                          value={brand}
+                          onChange={(event) => setBrand(event.target.value)}
+                          maxLength={120}
+                        />
+                        <Input
+                          aria-label="型号"
+                          placeholder="准确型号"
+                          value={code}
+                          onChange={(event) => setCode(event.target.value)}
+                          maxLength={160}
+                        />
+                        <Input
+                          aria-label="地区"
+                          placeholder="地区（可选，如 CN）"
+                          value={region}
+                          onChange={(event) => setRegion(event.target.value)}
+                          maxLength={40}
+                        />
+                        <Button
+                          type="primary"
+                          disabled={!brand.trim() || !code.trim()}
+                          loading={busy}
+                          onClick={() => void confirm()}
+                        >
+                          确认手动型号
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </section>
+          <aside className="recognition-guide">
+            <span className="guide-kicker">A LITTLE CURIOSITY</span>
+            <h2>
+              认识它，
+              <br />
+              才能更好地用它。
+            </h2>
+            <DeviceScene />
+            <div className="photo-tips">
+              <FileImage size={20} aria-hidden="true" />
+              <div>
+                <strong>把型号拍清楚</strong>
+                <p>优先拍摄底部或背面的铭牌，完整的型号信息会更有帮助。</p>
+              </div>
+            </div>
+            <div className="photo-tips">
+              <ShieldCheck size={20} aria-hidden="true" />
+              <div>
+                <strong>你的照片保持私有</strong>
+                <p>仅用于识别，并发送至模型服务处理，不进入公共资料库。</p>
+              </div>
+            </div>
+          </aside>
+        </div>
       )}
       {product ? (
-        <ChatPanel key={product.id} product={product} />
+        <ChatPanel
+          key={product.id}
+          product={product}
+          onBusyChange={setChatBusy}
+        />
       ) : (
         <div className="how-it-works">
           <div>

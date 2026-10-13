@@ -5,17 +5,20 @@ import type { Citation } from '../types/api';
 export function CitationCard({ citation }: { citation: Citation }) {
   const safeUrl = /^https:\/\//i.test(citation.url) ? citation.url : undefined;
   return (
-    <article className="citation">
-      <div>
+    <article className="citation" data-status={citation.verificationStatus}>
+      <div className="citation-heading">
         <ShieldCheck size={16} aria-hidden="true" />
         <span>
           {citation.verificationStatus === 'verified'
             ? '已核验来源'
             : '来源核验已变更'}
         </span>
+        <span className="citation-rank">
+          来源 {String(citation.rank).padStart(2, '0')}
+        </span>
       </div>
       <a href={safeUrl} target="_blank" rel="noopener noreferrer">
-        [{citation.rank}] {citation.title}
+        {citation.title}
         <ExternalLink size={14} aria-hidden="true" />
       </a>
       <small>

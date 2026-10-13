@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Spin } from 'antd';
-import { Mic, Square } from 'lucide-react';
+import { Mic, Square, Upload } from 'lucide-react';
 import { newKey, post, upload } from '../../services/api';
 import { recordingToWav } from '../../utils/audio';
 
@@ -102,7 +102,8 @@ export function SpeechInput({
           </Button>
         )}
         <label className="audio-upload-label">
-          上传录音
+          <Upload size={15} aria-hidden="true" />
+          <span>上传录音</span>
           <input
             aria-label="上传录音"
             type="file"

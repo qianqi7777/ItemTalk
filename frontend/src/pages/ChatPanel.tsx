@@ -1,16 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Spin } from 'antd';
-import { ArrowUp, Square, MessageCircle } from 'lucide-react';
+import {
+  ArrowUp,
+  Square,
+  MessageCircle,
+  Sparkles,
+  ShieldCheck,
+  ArrowUpRight,
+} from 'lucide-react';
 import { api, newKey, post, streamAnswer } from '../services/api';
 import { CitationCard } from '../components/CitationCard';
 import type { Citation, Message, ProductInstance, Run } from '../types/api';
 import { SpeechInput } from '../features/speech/SpeechInput';
 
-export function ChatPanel({ product }: { product: ProductInstance }) {
+export function ChatPanel({
+  product,
+  onBusyChange,
+}: {
+  product: ProductInstance;
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const [conversation, setConversation] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
@@ -25,7 +41,8 @@ export function ChatPanel({ product }: { product: ProductInstance }) {
   const [runId, setRunId] = useState('');
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    end.current?.scrollIntoView?.({ behavior: 'smooth' });
+    if (messages.length || draft)
+      end.current?.scrollIntoView?.({ behavior: 'smooth' });
   }, [messages, draft]);
   useEffect(() => () => controller.current?.abort(), []);
 
@@ -115,21 +132,48 @@ export function ChatPanel({ product }: { product: ProductInstance }) {
   return (
     <section className="chat-panel">
       <div className="section-heading">
-        <MessageCircle size={20} aria-hidden="true" />
-        <h2>问问产品助手</h2>
-        <span>依据资料回答</span>
+        <span className="section-icon">
+          <MessageCircle size={20} aria-hidden="true" />
+        </span>
+        <div>
+          <h2>和设备聊聊</h2>
+          <p>你来提问，我来查阅核验资料。</p>
+        </div>
+        <span className="chat-trust">
+          <ShieldCheck size={13} aria-hidden="true" />
+          依据资料回答
+        </span>
       </div>
       <div className="messages" aria-live="polite">
         {!messages.length && (
           <div className="chat-empty">
-            <MessageCircle size={32} aria-hidden="true" />
+            <span className="assistant-orb">
+              <Sparkles size={30} strokeWidth={1.4} aria-hidden="true" />
+            </span>
             <h3>关于 {product.modelCode}，想了解什么？</h3>
-            <p>试着问“如何开机？”或“指示灯是什么意思？”</p>
+            <p>从一个小问题开始，让使用设备变得更简单。</p>
+            <div className="starter-questions">
+              {['如何开始使用？', '需要注意什么？', '有哪些常用功能？'].map(
+                (question) => (
+                  <button
+                    key={question}
+                    type="button"
+                    onClick={() => setInput(question)}
+                  >
+                    {question}
+                    <ArrowUpRight size={14} aria-hidden="true" />
+                  </button>
+                ),
+              )}
+            </div>
           </div>
         )}
         {messages.map((message) => (
           <article className={`bubble ${message.role}`} key={message.id}>
             <span className="speaker">
+              {message.role !== 'user' && (
+                <Sparkles size={13} aria-hidden="true" />
+              )}
               {message.role === 'user' ? '你' : '识物说'}
             </span>
             <p>{message.content}</p>
@@ -145,7 +189,10 @@ export function ChatPanel({ product }: { product: ProductInstance }) {
         ))}
         {busy && (
           <article className="bubble assistant">
-            <span className="speaker">识物说</span>
+            <span className="speaker">
+              <Sparkles size={13} aria-hidden="true" />
+              识物说
+            </span>
             <div className="answer-draft">
               {draft || (
                 <>
