@@ -145,8 +145,10 @@ jobs:
     - name: Start API and worker
       working-directory: backend
       run: |
-        uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/itemtalk-api.log 2>&1 &
-        uv run python -m app.worker > /tmp/itemtalk-worker.log 2>&1 &
+        setsid uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/itemtalk-api.log 2>&1 &
+        echo "$!" > /tmp/itemtalk-api.pid
+        setsid uv run python -m app.worker > /tmp/itemtalk-worker.log 2>&1 &
+        echo "$!" > /tmp/itemtalk-worker.pid
         for attempt in {1..30}; do
           if curl --fail --silent http://127.0.0.1:8000/api/v1/health >/dev/null; then exit 0; fi
           sleep 1
@@ -158,6 +160,14 @@ jobs:
         npm ci
         npx playwright install --with-deps chromium
         npm run test:e2e
+    - name: Stop test services before dependency cache cleanup
+      if: always()
+      run: |
+        for pid_file in /tmp/itemtalk-api.pid /tmp/itemtalk-worker.pid; do
+          if [[ -f "$pid_file" ]]; then
+            kill -- "-$(cat "$pid_file")" 2>/dev/null || true
+          fi
+        done
     - uses: actions/upload-artifact@v4
       if: always()
       with:
