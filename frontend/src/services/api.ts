@@ -50,14 +50,18 @@ export const post = <T>(
     },
   });
 
-export async function upload(file: File): Promise<Asset> {
+export async function upload(
+  file: File,
+  kind?: 'product_photo' | 'nameplate' | 'voice' | 'feedback',
+): Promise<Asset> {
   const signed = await post<{ assetId: string; uploadUrl: string }>(
     '/assets/presign',
     {
       filename: file.name,
       mimeType: file.type,
       sizeBytes: file.size,
-      kind: file.type.startsWith('audio/') ? 'voice' : 'product_photo',
+      kind:
+        kind || (file.type.startsWith('audio/') ? 'voice' : 'product_photo'),
     },
     newKey(),
   );

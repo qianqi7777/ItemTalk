@@ -110,6 +110,27 @@ export interface Memory {
   confirmedAt: string | null;
   expiresAt: string | null;
 }
+export interface Guidance {
+  id: string;
+  topic: string;
+  status: 'active' | 'paused' | 'completed' | 'failed' | 'blocked_unsafe';
+  riskLevel: 'low' | 'medium' | 'high';
+  version: number;
+  currentStepNo: number | null;
+  notice: string | null;
+  currentStep: {
+    id: string;
+    stepNo: number;
+    instruction: string;
+    successCriteria: string;
+    riskLevel: 'low' | 'medium';
+    preconditions: string[];
+    safetyNotes: string[];
+    failureOfStepId: string | null;
+    status: string;
+    citations: Citation[];
+  } | null;
+}
 export interface Run {
   id: string;
   status: string;

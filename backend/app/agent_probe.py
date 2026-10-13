@@ -63,6 +63,7 @@ class GatewayChatModel(BaseChatModel):
     """将国内兼容协议隔离到网关，不引入供应商默认的执行工具。"""
 
     model_name: str = "itemtalk:restricted"
+    budget_subject: str = "agent-probe"
     bound_tools: list[Any] = []
 
     @property
@@ -85,7 +86,7 @@ class GatewayChatModel(BaseChatModel):
             return ChatResult(generations=[ChatGeneration(message=answer)])
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
-        gateway.budget("agent-probe")
+        gateway.budget(self.budget_subject)
         wire = []
         for message in messages:
             role = {"human": "user", "ai": "assistant", "system": "system", "tool": "tool"}[

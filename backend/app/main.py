@@ -18,6 +18,9 @@ from app.schemas import (
     ConversationRequest,
     Credentials,
     FeedbackRequest,
+    GuidanceFeedback,
+    GuidanceRequest,
+    GuidanceResume,
     IdentifyRequest,
     InstanceRequest,
     KnowledgeRequest,
@@ -35,7 +38,7 @@ from app.security import (
     token_for,
     verify_password,
 )
-from app.services import chat, feedback, manuals, memories, products, uploads
+from app.services import chat, feedback, guidance, manuals, memories, products, uploads
 from app.services.transcription import transcribe_asset
 from app.speech import asr_enabled
 from app.storage import Storage
@@ -487,6 +490,65 @@ def create_conversation(body: ConversationRequest, current=Depends(user)):
             title=body.title,
         )
         return chat.conversation_view(row)
+
+
+@app.post("/api/v1/guidance-sessions", status_code=201)
+def create_guidance(
+    body: GuidanceRequest, current=Depends(user), key: str = Header(alias="Idempotency-Key")
+):
+    with transaction() as connection:
+        return guidance.create(connection, current["id"], body, key)
+
+
+@app.get("/api/v1/guidance-sessions")
+def list_guidance(current=Depends(user), instanceId: UUID | None = None):
+    with transaction() as connection:
+        if instanceId:
+            products.owned(connection, "instances", instanceId, current["id"])
+        rows = many(
+            connection,
+            (
+                "SELECT g.* FROM guidance_sessions g JOIN "
+                "user_product_instances i ON i.id=g.user_product_instance_id "
+                "WHERE g.user_id=:u AND g.deleted_at IS NULL AND "
+                "i.deleted_at IS NULL AND (CAST(:i AS uuid) IS NULL OR "
+                "g.user_product_instance_id=:i) ORDER BY g.updated_at DESC "
+                "LIMIT 30"
+            ),
+            u=current["id"],
+            i=instanceId,
+        )
+        return {"items": [guidance.view(connection, row) for row in rows]}
+
+
+@app.get("/api/v1/guidance-sessions/{session_id}")
+def get_guidance(session_id: UUID, current=Depends(user)):
+    with transaction() as connection:
+        return guidance.view(
+            connection, guidance.selected_session(connection, session_id, current["id"])
+        )
+
+
+@app.post("/api/v1/guidance-sessions/{session_id}/feedback")
+def guidance_feedback(
+    session_id: UUID,
+    body: GuidanceFeedback,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+):
+    with transaction() as connection:
+        return guidance.feedback(connection, session_id, current["id"], body, key)
+
+
+@app.post("/api/v1/guidance-sessions/{session_id}/resume")
+def resume_guidance(
+    session_id: UUID,
+    body: GuidanceResume,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+):
+    with transaction() as connection:
+        return guidance.resume(connection, session_id, current["id"], body, key)
 
 
 @app.get("/api/v1/conversations")

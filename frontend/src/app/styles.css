@@ -1824,6 +1824,7 @@ a:focus-visible {
   }
 }
 .manual-panel,
+.guidance-panel,
 .memory-panel,
 .conversation-history {
   padding: 18px;
@@ -1837,6 +1838,40 @@ a:focus-visible {
 }
 .memory-content {
   margin-top: 14px;
+}
+.guidance-content {
+  margin-top: 14px;
+}
+.guidance-content form {
+  display: grid;
+  gap: 12px;
+}
+.guidance-step {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  margin-top: 16px;
+  border: 1px solid #e3e8f2;
+  border-radius: 12px;
+}
+.guidance-step h4 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.6;
+}
+.guidance-step ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+.guidance-history {
+  display: grid;
+  gap: 8px;
+  margin-block: 16px;
+}
+.guidance-history > button {
+  white-space: normal;
+  height: auto;
+  text-align: left;
 }
 .memory-card {
   padding: 14px;

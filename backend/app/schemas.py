@@ -131,3 +131,64 @@ class ExtractedMemory(StrictModel):
 
 class MemoryExtraction(StrictModel):
     memories: list[ExtractedMemory] = Field(default_factory=list, max_length=5)
+
+
+class GuidanceRequest(StrictModel):
+    userProductInstanceId: UUID
+    topic: str = Field(min_length=1, max_length=200)
+
+
+class GuidanceFeedback(StrictModel):
+    currentStepNo: int = Field(ge=1)
+    expectedVersion: int = Field(ge=1)
+    result: Literal["completed", "failed", "unclear", "paused"]
+    note: str | None = Field(default=None, max_length=2000)
+    assetIds: list[UUID] = Field(default_factory=list, max_length=3)
+    preconditionsConfirmed: bool = False
+
+    @model_validator(mode="after")
+    def unique_assets(self):
+        if len(set(self.assetIds)) != len(self.assetIds):
+            raise ValueError("反馈图片不能重复")
+        return self
+
+
+class GuidanceResume(StrictModel):
+    expectedVersion: int = Field(ge=1)
+
+
+class PlannedStep(StrictModel):
+    instruction: str = Field(min_length=1, max_length=1500)
+    successCriteria: str = Field(min_length=1, max_length=500)
+    riskLevel: Literal["low", "medium"]
+    preconditions: list[str] = Field(default_factory=list, max_length=6)
+    safetyNotes: list[str] = Field(default_factory=list, max_length=6)
+    citationRanks: list[int] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def bounded_fields(self):
+        if any(
+            not value.strip() or len(value) > 500 for value in self.preconditions + self.safetyNotes
+        ):
+            raise ValueError("前提或安全提示长度无效")
+        if len(set(self.citationRanks)) != len(self.citationRanks) or any(
+            not 1 <= rank <= 12 for rank in self.citationRanks
+        ):
+            raise ValueError("引用编号无效")
+        return self
+
+
+class GuidancePlan(StrictModel):
+    riskLevel: Literal["low", "medium", "high"]
+    steps: list[PlannedStep] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def require_safe_steps(self):
+        if self.riskLevel != "high" and not self.steps:
+            raise ValueError("低/中风险引导必须有证据支持的步骤")
+        return self
+
+
+class GuidanceObservation(StrictModel):
+    observation: str = Field(min_length=1, max_length=1500)
+    uncertainty: str = Field(max_length=500)

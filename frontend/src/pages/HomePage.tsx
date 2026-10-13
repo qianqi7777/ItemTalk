@@ -26,6 +26,7 @@ import { ChatPanel } from './ChatPanel';
 import { DeviceScene } from '../components/DeviceScene';
 import { ManualPanel } from '../features/manuals/ManualPanel';
 import { MemoryPanel } from '../features/memories/MemoryPanel';
+import { GuidancePanel } from '../features/guidance/GuidancePanel';
 
 export function HomePage() {
   const [input, setInput] = useState('');
@@ -36,6 +37,7 @@ export function HomePage() {
   const [job, setJob] = useState<Job>();
   const [busy, setBusy] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
+  const [guidanceBusy, setGuidanceBusy] = useState(false);
   const [error, setError] = useState('');
   const [manual, setManual] = useState(false);
   const [brand, setBrand] = useState('');
@@ -181,7 +183,7 @@ export function HomePage() {
             className="restart-button"
             icon={<RotateCcw size={16} aria-hidden="true" />}
             onClick={restartIdentification}
-            disabled={busy || chatBusy}
+            disabled={busy || chatBusy || guidanceBusy}
           >
             重新识别
           </Button>
@@ -218,7 +220,7 @@ export function HomePage() {
               <Select
                 aria-label="切换产品"
                 value={product.id}
-                disabled={busy || chatBusy}
+                disabled={busy || chatBusy || guidanceBusy}
                 options={products.map((item) => ({
                   value: item.id,
                   label: `${item.nickname || item.modelCode} · ${item.brandName}`,
@@ -433,6 +435,7 @@ export function HomePage() {
         <div key={product.id}>
           <ManualPanel product={product} />
           <MemoryPanel instanceId={product.id} />
+          <GuidancePanel product={product} onBusyChange={setGuidanceBusy} />
           <ChatPanel product={product} onBusyChange={setChatBusy} />
         </div>
       ) : (

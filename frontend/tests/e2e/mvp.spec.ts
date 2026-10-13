@@ -54,6 +54,46 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   await expect(page.getByText('全局偏好 · 已确认')).toBeVisible();
   await page.getByRole('button', { name: '删除记忆' }).click();
   await expect(page.getByText(/暂无记忆/)).toBeVisible();
+  await page.getByRole('button', { name: '操作引导' }).click();
+  await page.getByLabel('你想完成什么操作？').fill('如何开机');
+  await page.getByRole('button', { name: '开始引导', exact: true }).click();
+  await expect(page.getByText('当前步骤 1')).toBeVisible();
+  await page.getByRole('button', { name: '暂停引导', exact: true }).click();
+  await expect(
+    page.getByText('引导已暂停，恢复后仍从当前步骤开始。'),
+  ).toBeVisible();
+  // 重载页面后从持久化列表恢复同一引导，不能依赖React内存状态。
+  await page.reload();
+  await page.getByRole('button', { name: '操作引导', exact: true }).click();
+  await page
+    .getByRole('button', { name: '如何开机 · 已暂停', exact: true })
+    .click();
+  await page.getByRole('button', { name: '恢复引导', exact: true }).click();
+  await expect(page.getByText('当前步骤 1')).toBeVisible();
+  await page.getByRole('button', { name: '已完成', exact: true }).click();
+  await expect(page.getByText('当前步骤 2')).toBeVisible();
+  await page.screenshot({
+    path: 'test-results/v1-guidance-desktop.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: 'test-results/v1-guidance-mobile.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '已完成', exact: true }).click();
+  await expect(page.getByText('操作引导已完成', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '开始新的引导', exact: true }).click();
+  await page
+    .getByLabel('你想完成什么操作？')
+    .fill('如何带电拆开电源并短接保护');
+  await page.getByRole('button', { name: '开始引导', exact: true }).click();
+  await expect(page.getByText(/该操作风险较高/)).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: '已完成', exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator('.guidance-step')).toHaveCount(0);
   // 等待聊天区平滑滚动结束，避免 fullPage 截图捕获中间滚动位置。
   await page.waitForTimeout(350);
   await page.evaluate(() => window.scrollTo(0, 0));

@@ -97,6 +97,7 @@ def run_once(requested_id=None):
             "asset_cleanup": cleanup_asset,
             "manual": generate_manual,
             "memory_extract": extract_memories,
+            "checkpoint_cleanup": cleanup_checkpoint,
         }
         handler = handlers.get(job["job_type"])
         if not handler:
@@ -125,6 +126,12 @@ def extract_memories(job):
     from app.services.memories import extract
 
     extract(job)
+
+
+def cleanup_checkpoint(job):
+    from app.services.guidance import cleanup_checkpoint as cleanup
+
+    cleanup(job)
 
 
 def cleanup_asset(job):
