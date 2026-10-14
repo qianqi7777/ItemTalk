@@ -22,7 +22,11 @@ def _parse(data, mime):
             from pypdf import PdfReader
 
             reader = PdfReader(io.BytesIO(data))
-            if len(reader.pages) > 200 or reader.is_encrypted:
+            # 部分公开官网PDF只设置所有者权限，空用户密码即可阅读；is_encrypted在
+            # 解密后仍为True。只尝试空密码，真正需密码或不支持的加密仍拒绝。
+            if reader.is_encrypted and not reader.decrypt(""):
+                raise ValueError("Password-protected PDF")
+            if len(reader.pages) > 200:
                 raise ValueError("Unsupported PDF")
             pages = [
                 (index, (page.extract_text() or "")[:40000])
