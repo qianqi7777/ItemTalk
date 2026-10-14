@@ -7,7 +7,7 @@ from app.adapters import ModelGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError, missing
-from app.security import digest
+from app.security import digest, normalize
 from app.services.products import owned, require_assets
 from app.storage import Storage
 
@@ -191,17 +191,37 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
     return run, True
 
 
+def lexical_question(question, model):
+    """型号已由数据库范围限定；不让每页重复的品牌/型号淹没实际操作意图。"""
+    result = normalize(question)
+    for value in (model.get("model_code"), model.get("brand_name")):
+        if not value or len(value.strip()) < 3:
+            continue
+        pattern = r"[-_\s]*".join(
+            re.escape(part) for part in re.split(r"[-_\s]+", normalize(value))
+        )
+        result = re.sub(r"(?<![a-z0-9])" + pattern + r"(?![a-z0-9])", " ", result)
+    return result.strip() if re.search(r"\w", result) else normalize(question)
+
+
 def retrieve(model_id, question, vector, limit=5):
     """同模型修订余弦扫描和 trigram 融合；每层证据均须处于 verified 状态。"""
+    # 无关键词命中时不按UUID虚构词法贡献；C locale无法识别中文词时也只用有效信号。
     with transaction() as connection:
+        model = one(
+            connection,
+            "SELECT m.model_code,b.name AS brand_name FROM product_models m "
+            "JOIN brands b ON b.id=m.brand_id WHERE m.id=:id",
+            id=model_id,
+        )
+        query = lexical_question(question, model) if model else question
         rows = many(
             connection,
             (
                 "WITH eligible AS ( SELECT "
-                "k.*,v.version_label,v.verified_at,d.title,s.url, row_number() "
-                "OVER(ORDER BY k.embedding <=> CAST(:vector AS vector)) AS "
-                "vector_rank, row_number() OVER(ORDER BY "
-                "similarity(k.content,:question) DESC,k.id) AS text_rank FROM "
+                "k.*,v.version_label,v.verified_at,d.title,s.url, "
+                "k.embedding <=> CAST(:vector AS vector) AS vector_distance, "
+                "word_similarity(:question,k.content) AS text_score FROM "
                 "knowledge_chunks k JOIN product_models m ON m.id=k.product_model_id "
                 "JOIN document_versions v ON v.id=k.document_version_id JOIN "
                 "documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id"
@@ -212,12 +232,14 @@ def retrieve(model_id, question, vector, limit=5):
                 "v.verification_status='verified' AND "
                 "s.verification_status='verified' AND l.match_type='exact' AND "
                 "k.embedding_model=:embedding_model AND "
-                "k.embedding_revision=:revision AND k.embedding IS NOT NULL) SELECT *"
-                " FROM eligible ORDER BY (1.0/(60+vector_rank)+1.0/(60+text_rank)) "
-                "DESC LIMIT :limit"
+                "k.embedding_revision=:revision AND k.embedding IS NOT NULL), ranked AS "
+                "(SELECT *,row_number() OVER(ORDER BY vector_distance,id) AS vector_rank,"
+                "row_number() OVER(ORDER BY text_score DESC,id) AS text_rank FROM eligible) "
+                "SELECT * FROM ranked ORDER BY (1.0/(60+vector_rank)+CASE WHEN text_score>0 "
+                "THEN 1.0/(60+text_rank) ELSE 0 END) DESC,id LIMIT :limit"
             ),
             vector=json_value(vector),
-            question=question,
+            question=query,
             model=model_id,
             embedding_model=settings().embedding_model,
             revision=settings().embedding_revision,

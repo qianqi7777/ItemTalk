@@ -14,6 +14,7 @@ from app.errors import DomainError
 from app.fetch import encrypted_public_dns, public_addresses
 from app.schemas import IdentifyRequest, MessageRequest
 from app.security import digest, normalize
+from app.services.chat import lexical_question
 from app.services.knowledge import applicable, official_url
 from app.storage import sanitize_image
 
@@ -35,6 +36,14 @@ def test_empty_input_rejected(schema, body):
 def test_normalization_and_hash():
     assert normalize(" ＡＢＣ ") == "abc"
     assert digest({"a": 1, "b": 2}) == digest({"b": 2, "a": 1})
+
+
+def test_lexical_query_keeps_intent_and_nearby_models():
+    model = {"model_code": "AB-100", "brand_name": "Acme"}
+    assert lexical_question("ACME AB 100如何关闭？", model) == "如何关闭?"
+    assert lexical_question("AB-1000如何关闭？", model) == "ab-1000如何关闭?"
+    assert lexical_question("ＡＢ－１００", model) == "ab-100"
+    assert lexical_question(" AB_100 配对", model) == "配对"
 
 
 @pytest.mark.parametrize(
