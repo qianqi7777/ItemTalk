@@ -144,6 +144,7 @@ def restore_drill(
     writers_paused=False,
     cos_assets=False,
     online_immutable_assets=False,
+    verify_restore=True,
 ):
     """使用进程环境传递凭据；工具路径由运维显式指定，不接受模型生成命令。"""
     config = settings()
@@ -190,8 +191,6 @@ def restore_drill(
     identifier = uuid4().hex
     backup = output_directory / f"restore-drill-{identifier}.dump"
     assets_archive = backup.with_suffix(".dump.assets.tar.gz")
-    scratch = f"itemtalk_restore_{identifier[:16]}"
-    created = False
     staging = None
     inventory = None
     object_storage = None
@@ -247,41 +246,27 @@ def restore_drill(
                     or snapshot_objects(object_storage, keys) != inventory
                 ):
                     raise ValueError("COS objects changed during the paired backup")
-        with psycopg.connect(**connect_args, autocommit=True) as admin:
-            admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(scratch)))
-            created = True
-        restore_env = {**environment, "PGDATABASE": scratch}
-        subprocess.run(  # noqa: S603
-            [
-                binaries["pg_restore"],
-                "--exit-on-error",
-                "--dbname",
-                scratch,
-                str(backup),
-            ],
-            env=restore_env,
-            capture_output=True,
-            check=True,
-            timeout=300,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-        with psycopg.connect(**{**connect_args, "dbname": scratch}) as restored:
-            actual = manifest(restored)
-            if actual != expected:
-                raise ValueError("Restored database differs from the consistent snapshot")
-            if files is not None:
-                # TemporaryDirectory是本次创建的独立目标；归档不能链接到其他目录。
-                with tempfile.TemporaryDirectory(
-                    prefix=f"itemtalk_assets_{identifier}_", dir=output_directory
-                ) as restored_directory:
-                    restore_assets(assets_archive, restored_directory, files)
-                    verify_references(restored, file_manifest(restored_directory))
+        if verify_restore:
+            restore_snapshot(
+                backup, expected, files, assets_archive, connect_args, environment, binaries
+            )
+        else:
+            # 每日只导出并验证归档目录；不能把没有实际恢复的结果标为演练通过。
+            subprocess.run(  # noqa: S603
+                [binaries["pg_restore"], "--list", str(backup)],
+                env=environment,
+                capture_output=True,
+                check=True,
+                timeout=300,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
         with backup.open("rb") as file:
             checksum = hashlib.file_digest(file, "sha256").hexdigest()
         checksum_file = backup.with_suffix(".dump.sha256")
         checksums = f"{checksum}  {backup.name}\n"
         result = {
-            "status": "passed",
+            "status": "passed" if verify_restore else "exported",
+            "restoreVerified": verify_restore,
             "tables": len(expected["tables"]),
             "rows": sum(table["rows"] for table in expected["tables"].values()),
             "backup": str(backup),
@@ -334,16 +319,74 @@ def restore_drill(
             file.write(checksums)
         return result
     finally:
-        try:
-            if created:
-                # scratch 仅由本函数生成，且只有 CREATE 成功后才执行清理。
-                with psycopg.connect(**connect_args, autocommit=True) as admin:
-                    admin.execute(
-                        sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(scratch))
-                    )
-        finally:
-            if staging is not None:
-                staging.cleanup()
+        if staging is not None:
+            staging.cleanup()
+
+
+def restore_snapshot(backup, expected, files, assets_archive, connect_args, environment, binaries):
+    """仅恢复本次创建的临时库；生产库名称永远不会传给pg_restore。"""
+    scratch = f"itemtalk_restore_{uuid4().hex[:16]}"
+    created = False
+    try:
+        with psycopg.connect(**connect_args, autocommit=True) as admin:
+            admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(scratch)))
+            created = True
+        subprocess.run(  # noqa: S603
+            [binaries["pg_restore"], "--exit-on-error", "--dbname", scratch, str(backup)],
+            env={**environment, "PGDATABASE": scratch},
+            capture_output=True,
+            check=True,
+            timeout=300,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        with psycopg.connect(**{**connect_args, "dbname": scratch}) as restored:
+            # 每周从JSON清单加载时tuple变成list；比较规范JSON，仍核验全部字段。
+            if json.loads(json.dumps(manifest(restored))) != json.loads(json.dumps(expected)):
+                raise ValueError("Restored database differs from the consistent snapshot")
+            if files is not None:
+                with tempfile.TemporaryDirectory(
+                    prefix="itemtalk_assets_", dir=Path(backup).parent
+                ) as directory:
+                    restore_assets(assets_archive, directory, files)
+                    verify_references(restored, file_manifest(directory))
+        return {"status": "passed", "restoreVerified": True, "target": "isolated-database"}
+    finally:
+        if created:
+            # CREATE失败时不删已有库，甚至不会尝试清理同名对象。
+            with psycopg.connect(**connect_args, autocommit=True) as admin:
+                admin.execute(
+                    sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(scratch))
+                )
+
+
+def restore_saved_bundle(backup, pg_bin=None):
+    """调用方先验证完整四文件校验清单，再用既有角色恢复至隔离库。"""
+    backup = Path(backup)
+    bundle = json.loads(backup.with_suffix(".dump.manifest.json").read_text(encoding="utf-8"))
+    if bundle.get("formatVersion") not in {1, 2} or not isinstance(bundle.get("assets"), dict):
+        raise ValueError("Paired manifest is required")
+    url = settings().db_url()
+    url = make_url(url) if isinstance(url, str) else url
+    args = url.translate_connect_args(username="user", database="dbname")
+    args.update(url.query)
+    args["connect_timeout"] = 10
+    environment = {
+        **os.environ,
+        "PGHOST": str(url.host or "localhost"),
+        "PGPORT": str(url.port or 5432),
+        "PGUSER": str(url.username or ""),
+        "PGPASSWORD": str(url.password or ""),
+        "PGCONNECT_TIMEOUT": "10",
+    }
+    return restore_snapshot(
+        backup,
+        bundle["database"],
+        bundle["assets"],
+        backup.with_suffix(".dump.assets.tar.gz"),
+        args,
+        environment,
+        postgres_clients(pg_bin),
+    )
 
 
 def main():
@@ -351,6 +394,9 @@ def main():
     parser.add_argument("--pg-bin", type=Path)
     parser.add_argument("--output-directory", type=Path, default=Path(".local-data/backups"))
     parser.add_argument("--assets-directory", type=Path, help="Paired local storage root")
+    parser.add_argument(
+        "--export-only", action="store_true", help="Export without claiming restore"
+    )
     parser.add_argument(
         "--cos-assets", action="store_true", help="Read database-inventoried COS objects"
     )
@@ -373,6 +419,7 @@ def main():
                     args.writers_paused,
                     args.cos_assets,
                     args.online_immutable_assets,
+                    not args.export_only,
                 ),
                 ensure_ascii=False,
             )

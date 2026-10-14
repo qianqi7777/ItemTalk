@@ -1,0 +1,7 @@
+[Unit]
+Description=Persist ItemTalk operational failure event for %i
+[Service]
+Type=oneshot
+User=ubuntu
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/itemtalk/current/infra/record_ops_failure.py %i

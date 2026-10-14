@@ -1,4 +1,5 @@
 [Unit]
+OnFailure=itemtalk-ops-failure@itemtalk-health.service
 Description=ItemTalk HTTPS and certificate health
 [Service]
 Type=oneshot

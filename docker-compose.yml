@@ -261,6 +261,10 @@ services:
     - ALL
     security_opt:
     - no-new-privileges:true
+    # 独立备份桶/告警配置只从服务器受限文件加载；缺失时真实任务失败关闭。
+    env_file:
+    - path: /opt/itemtalk/.env.backup
+      required: false
     environment:
       ENVIRONMENT: backup
       MODEL_PROVIDER: mock

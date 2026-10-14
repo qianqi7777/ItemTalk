@@ -1,0 +1,8 @@
+[Unit]
+Description=Weekly ItemTalk restore verification
+[Timer]
+# 安装时确认服务器时区；本方案固定东八区，周日04:00。
+OnCalendar=Sun *-*-* 04:00:00 Asia/Shanghai
+Persistent=true
+[Install]
+WantedBy=timers.target

@@ -149,6 +149,8 @@ jobs:
         docker run --rm --entrypoint /usr/lib/postgresql/16/bin/pg_dump "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" --version | grep -E '^pg_dump \(PostgreSQL\) 16\.'
         docker run --rm --entrypoint /usr/lib/postgresql/16/bin/pg_restore "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" --version | grep -E '^pg_restore \(PostgreSQL\) 16\.'
         docker run --rm --user 1000:1001 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" -m app.restore_check --help >/dev/null
+        docker run --rm --user 1000:1001 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" -m app.backup_jobs --help >/dev/null
+        docker run --rm --user 1000:1001 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" -m app.ops_alerts --help >/dev/null
         # heads是离线迁移元数据命令；不连接数据库或加载生产环境配置。
         head=$(docker run --rm --entrypoint python "ghcr.io/qianqi7777/itemtalk-api@$API_DIGEST" -m alembic heads)
         [[ $(printf '%s\n' "$head" | wc -l) == 1 ]] || { echo 'Single migration head required'; exit 2; }
