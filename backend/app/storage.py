@@ -42,17 +42,25 @@ class Storage:
         return path
 
     def url(self, asset, write=False):
-        expires = datetime.now(UTC) + timedelta(minutes=15)
+        now = datetime.now(UTC)
+        ttl = 900
+        if write and asset["expires_at"]:
+            # 幂等重放不能延长旧 PUT 签名，清理时间以最初上传期限为准。
+            remaining = int((asset["expires_at"] - now).total_seconds())
+            if remaining <= 0:
+                raise DomainError(409, "RESOURCE_CONFLICT", "上传已过期，请创建新上传")
+            ttl = min(ttl, remaining)
+        expires = now + timedelta(seconds=ttl)
         if self.client:
             url = self.client.get_presigned_url(
                 Bucket=self.config.cos_bucket,
                 Key=asset["object_key"],
                 Method="PUT" if write else "GET",
-                Expired=900,
+                Expired=ttl,
             )
         else:
             action = "upload" if write else "read"
-            token = token_for(asset["id"], action, owner=str(asset["owner_user_id"]))
+            token = token_for(asset["id"], action, owner=str(asset["owner_user_id"]), exp=expires)
             base = self.config.app_public_url.rstrip("/")
             url = f"{base}/api/v1/assets/{asset['id']}/content?token={token}"
         return url, expires.isoformat()

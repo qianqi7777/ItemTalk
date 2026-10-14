@@ -1,5 +1,6 @@
 """SQLAlchemy 持久化基础设施；所有业务写入在显式事务内执行。"""
 
+import hashlib
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -9,17 +10,22 @@ from uuid import UUID
 from sqlalchemy import create_engine, text
 
 from app.config import settings
+from app.errors import DomainError
 
 # 身份来自已验证的 HTTP JWT 或已领取的 Worker 任务，不接收客户端指定的用户头。
 actor_id = ContextVar("database_actor", default=None)
+identity_lock_held = ContextVar("database_identity_lock_held", default=None)
+actor_may_cleanup = ContextVar("database_actor_may_cleanup", default=False)
 
 
 @contextmanager
-def actor(user_id):
+def actor(user_id, *, allow_deleted=False):
     token = actor_id.set(UUID(str(user_id)) if user_id else None)
+    cleanup_token = actor_may_cleanup.set(allow_deleted)
     try:
         yield
     finally:
+        actor_may_cleanup.reset(cleanup_token)
         actor_id.reset(token)
 
 
@@ -32,7 +38,7 @@ def engine():
 
 
 @contextmanager
-def transaction():
+def transaction(*, exclusive=False, lock_identity=True):
     with engine().begin() as connection:
         # SET LOCAL 只在本事务有效；连接池复用、提交和回滚都不能遗留上一用户身份。
         execute(
@@ -40,7 +46,35 @@ def transaction():
             "SELECT set_config('itemtalk.user_id',:actor,true)",
             actor=str(actor_id.get() or ""),
         )
-        yield connection
+        held = identity_lock_held.get()
+        current = actor_id.get()
+        if exclusive and held == current and current:
+            raise RuntimeError("Deletion must start outside an existing private transaction")
+        token = None
+        if current and lock_identity and held != current:
+            # 私有请求共享用户锁，删除独占用户锁。锁先于业务行锁取得，阻止已认证的
+            # 并发请求在删除快照之后新建记录；数据库事务结束自动释放。
+            key = int.from_bytes(
+                hashlib.sha256(actor_id.get().bytes).digest()[:8], "big", signed=True
+            )
+            function = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+            execute(connection, f"SELECT {function}(:key)", key=key)  # noqa: S608
+            token = identity_lock_held.set(current)
+        try:
+            if current and not actor_may_cleanup.get():
+                # 认证依赖与业务事务之间可能发生账号删除；取得共享锁后再次验证。
+                active = one(
+                    connection,
+                    ("SELECT id FROM users WHERE id=:u AND status='active' AND deleted_at IS NULL"),
+                    u=current,
+                )
+                if not active:
+                    raise DomainError(401, "AUTH_REQUIRED", "账号不可用，请重新登录")
+            # 图工具/预算会打开嵌套连接；复用外层身份锁，避免与排队删除相互等待。
+            yield connection
+        finally:
+            if token is not None:
+                identity_lock_held.reset(token)
 
 
 def execute(connection, statement, **params):

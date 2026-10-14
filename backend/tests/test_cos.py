@@ -1,6 +1,7 @@
 """COS 协议分支回归；预签名使用真实 SDK，网络读写通过受控对象 mock。"""
 
 import io
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -30,7 +31,11 @@ def cos_settings(monkeypatch):
 
 def test_real_sdk_signs_only_temporary_put_and_confirmed_get(cos_settings):
     storage = Storage()
-    asset = {"id": uuid4(), "object_key": "temporary/unit-test"}
+    asset = {
+        "id": uuid4(),
+        "object_key": "temporary/unit-test",
+        "expires_at": datetime.now(UTC) + timedelta(minutes=15),
+    }
     signed, _expires = storage.url(asset, write=True)
     parts = urlsplit(signed)
     assert parts.scheme == "https"
@@ -50,6 +55,18 @@ def test_cos_read_caps_bytes_and_closes_stream(cos_settings):
     with pytest.raises(DomainError) as error:
         storage.read("temporary/unit-test", maximum=3)
     assert error.value.status == 413 and stream.closed
+
+
+def test_reissued_put_signature_cannot_outlive_original_upload(cos_settings):
+    original_expiry = datetime.now(UTC) + timedelta(seconds=7)
+    signed, reported_expiry = Storage().url(
+        {"id": uuid4(), "object_key": "temporary/unit-test", "expires_at": original_expiry},
+        write=True,
+    )
+    start, end = parse_qs(urlsplit(signed).query)["q-sign-time"][0].split(";")
+    # SDK 将起始时间回拨 60 秒容忍时钟差；真正的失效边界是结束时间。
+    assert int(start) < int(end) <= int(original_expiry.timestamp())
+    assert datetime.fromisoformat(reported_expiry) <= original_expiry
 
 
 @pytest.mark.parametrize("operation", ["read", "put", "delete"])

@@ -98,12 +98,14 @@ def run_once(requested_id=None):
             "manual": generate_manual,
             "memory_extract": extract_memories,
             "checkpoint_cleanup": cleanup_checkpoint,
+            "user_cleanup": cleanup_user,
         }
         handler = handlers.get(job["job_type"])
         if not handler:
             raise DomainError(422, "VALIDATION_ERROR", "任务类型未启用")
         # 领取入口只能返回一个已加租约的任务；私有处理始终切换为该任务本人。
-        with actor(job["user_id"]), LeaseHeartbeat(job):
+        cleanup_job = job["job_type"] in {"user_cleanup", "asset_cleanup", "checkpoint_cleanup"}
+        with actor(job["user_id"], allow_deleted=cleanup_job), LeaseHeartbeat(job):
             handler(job)
     except Exception as error:
         # 不记录上游正文、用户原始输入和密钥；对外只保留受控错误文案。
@@ -113,7 +115,7 @@ def run_once(requested_id=None):
             job["job_type"],
             type(error).__name__,
         )
-        with actor(job["user_id"]):
+        with actor(job["user_id"], allow_deleted=True):
             fail(job, error.message if isinstance(error, DomainError) else "任务处理失败，请重试")
     return True
 
@@ -137,23 +139,15 @@ def cleanup_checkpoint(job):
 
 
 def cleanup_asset(job):
-    """过期临时上传清理具备幂等性，确认后的不可变对象不受影响。"""
-    with transaction() as connection:
-        fenced(connection, job)
-        asset = one(
-            connection, "SELECT * FROM assets WHERE id=:id FOR UPDATE", id=job["payload"]["assetId"]
-        )
-        key = job["payload"]["temporaryKey"]
-        if not key.startswith("temporary/"):
-            raise DomainError(409, "RESOURCE_CONFLICT", "临时清理对象范围无效")
-        Storage().delete(key)
-        if asset and asset["status"] == "pending":
-            execute(
-                connection,
-                ("UPDATE assets SET status='deleted',deleted_at=now() WHERE id=:id"),
-                id=asset["id"],
-            )
-        finish(connection, job)
+    from app.services.lifecycle import cleanup_upload
+
+    cleanup_upload(job)
+
+
+def cleanup_user(job):
+    from app.services.lifecycle import cleanup
+
+    cleanup(job)
 
 
 def main():

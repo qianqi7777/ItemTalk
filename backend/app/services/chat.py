@@ -309,7 +309,7 @@ def complete_run(run, on_token=None):
                                 "SELECT status FROM assistant_runs WHERE id=:id",
                                 id=run["id"],
                             )
-                            if current["status"] != "running":
+                            if not current or current["status"] != "running":
                                 raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
                         pieces.append(piece)
                         on_token(piece)

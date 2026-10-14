@@ -21,6 +21,7 @@ import type {
 } from '../types/api';
 import { MessageFeedback } from '../features/feedback/MessageFeedback';
 import { SpeechInput } from '../features/speech/SpeechInput';
+import { DeleteAction } from '../components/DeleteAction';
 
 export function ChatPanel({
   product,
@@ -212,6 +213,28 @@ export function ChatPanel({
         </span>
       </div>
       <div className="conversation-toolbar inline-actions">
+        {conversation && (
+          <DeleteAction
+            path={`/conversations/${conversation}`}
+            label="删除会话"
+            explanation="当前会话、反馈和由它产生的记忆将删除。仍被其他内容引用的照片会保留。"
+            disabled={busy || loadingHistory}
+            onBusyChange={setBusy}
+            onDeleted={() => {
+              setConversation('');
+              setMessages([]);
+              setMessageCursor(null);
+              setRunId('');
+              setRetryInput('');
+              setHistory((old) =>
+                old.filter((item) => item.id !== conversation),
+              );
+              setDraft('');
+              setCitations([]);
+              setError('');
+            }}
+          />
+        )}
         <Button
           disabled={busy || loadingHistory}
           onClick={() => {

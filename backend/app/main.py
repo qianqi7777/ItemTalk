@@ -39,7 +39,7 @@ from app.security import (
     token_for,
     verify_password,
 )
-from app.services import chat, feedback, guidance, manuals, memories, products, uploads
+from app.services import chat, feedback, guidance, lifecycle, manuals, memories, products, uploads
 from app.services.transcription import transcribe_asset
 from app.speech import asr_enabled
 from app.storage import Storage
@@ -220,6 +220,20 @@ def me(current=Depends(user)):
     return user_view(current)
 
 
+@app.delete("/api/v1/me", status_code=202)
+def delete_account(response: Response, current=Depends(user)):
+    with transaction(exclusive=True) as connection:
+        result = lifecycle.account(connection, current["id"])
+    response.delete_cookie(
+        "itemtalk_auth",
+        path=settings().auth_cookie_path,
+        secure=settings().auth_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+    return result
+
+
 @app.get("/api/v1/me/memories")
 def list_memories(current=Depends(user), instanceId: UUID | None = None):
     with transaction() as connection:
@@ -318,6 +332,12 @@ def get_asset(asset_id: UUID, current=Depends(user)):
         return uploads.asset_view(products.owned(connection, "assets", asset_id, current["id"]))
 
 
+@app.delete("/api/v1/assets/{asset_id}", status_code=204)
+def delete_asset(asset_id: UUID, current=Depends(user)):
+    with transaction(exclusive=True) as connection:
+        lifecycle.resource(connection, current["id"], "asset", asset_id)
+
+
 @app.post("/api/v1/products/identify", status_code=202)
 def identify(
     body: IdentifyRequest, current=Depends(user), key: str = Header(alias="Idempotency-Key")
@@ -390,6 +410,12 @@ def get_product(instance_id: UUID, current=Depends(user)):
         return products.instance_view(
             connection, products.owned(connection, "instances", instance_id, current["id"])
         )
+
+
+@app.delete("/api/v1/me/products/{instance_id}", status_code=204)
+def delete_instance(instance_id: UUID, current=Depends(user)):
+    with transaction(exclusive=True) as connection:
+        lifecycle.resource(connection, current["id"], "instance", instance_id)
 
 
 @app.post("/api/v1/me/products", status_code=201)
@@ -608,24 +634,8 @@ def list_conversations(
 
 @app.delete("/api/v1/conversations/{conversation_id}", status_code=204)
 def delete_conversation(conversation_id: UUID, current=Depends(user)):
-    with transaction() as connection:
-        products.owned(connection, "conversations", conversation_id, current["id"])
-        execute(
-            connection, "SELECT id FROM conversations WHERE id=:id FOR UPDATE", id=conversation_id
-        )
-        execute(
-            connection,
-            "UPDATE conversations SET deleted_at=now(),status='archived' WHERE id=:id",
-            id=conversation_id,
-        )
-        execute(
-            connection,
-            (
-                "UPDATE assistant_runs SET status='cancelled',finished_at=now() WHE"
-                "RE conversation_id=:id AND status='running'"
-            ),
-            id=conversation_id,
-        )
+    with transaction(exclusive=True) as connection:
+        lifecycle.resource(connection, current["id"], "conversation", conversation_id)
 
 
 @app.post("/api/v1/messages/{message_id}/feedback", status_code=204)

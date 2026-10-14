@@ -11,6 +11,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { Brand } from '../components/Brand';
+import { DeleteAction } from '../components/DeleteAction';
 import { api, post } from '../services/api';
 import { SessionContext } from '../stores/session';
 import type { User } from '../types/api';
@@ -104,6 +105,12 @@ export function App() {
                   {(user.displayName || user.email).slice(0, 1).toUpperCase()}
                 </span>
                 <span className="user-email">{user.email}</span>
+                <DeleteAction
+                  path="/me"
+                  label="删除账号"
+                  explanation="账号将立即停用，个人照片、会话、记忆和操作引导会随后清除。公共资料会保留。"
+                  onDeleted={refresh}
+                />
                 <Button
                   type="text"
                   aria-label="退出登录"

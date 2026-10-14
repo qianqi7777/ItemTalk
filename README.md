@@ -63,6 +63,8 @@ E2E 使用独立测试库，先启动 mock API 和 Worker。CI 对前端、后�
 
 ## 真实服务验证
 
+私有数据可从页面删除账号、产品、会话和未被引用的照片。删除先屏蔽访问并取消私有任务，Worker 分批清理对象后按外键顺序删除记录；仍被其他内容引用的照片会保留，公共知识与公共构建不受影响。临时 PUT 签名有效期内保留清理依据，签名到期后再删除文件，避免旧签名重新创建对象。上传确认独立记录对象预留，主事务回滚产生的孤儿文件也会被定时清理。账号完成清理后不保留个人身份、私有任务 payload 或 Agent 检查点。
+
 已确定文本/视觉分别配置为 `qwen3.7-flash`，向量为 `text-embedding-v4`、1024 维，语音为 `qwen3-asr-flash`，搜索为 Bocha。代码中的百炼 provider 名沿用 `dashscope`。查询和文档索引必须使用相同模型与修订；更换修订不覆盖已有向量，由后续受控重建处理。
 
 本地真实配置位于 Git 忽略的 `backend/.env`，从 `backend/` 启动即可加载。Compose 使用该文件时显式传入 `--env-file backend/.env`。文本使用 `MODEL_BASE_URL/MODEL_API_KEY/CHAT_MODEL`，视觉使用 `VISION_*`，向量使用 `EMBEDDING_*`，搜索使用 `SEARCH_*`，ASR 使用 `STT_PROVIDER/STT_BASE_URL/STT_API_KEY/STT_MODEL`。各角色保留独立超时；429/5xx 最多重试至配置的总尝试次数，流式输出开始后、网络超时或断线后不自动重放。

@@ -48,6 +48,9 @@ def create_upload(connection, request, user):
         size=request.sizeBytes,
         kind=request.kind,
     )
+    from app.services.lifecycle import track_upload
+
+    track_upload(connection, asset)
     # 签名过期后清理临时键，避免删除后仍被有效 PUT 签名重新创建。
     cleanup = new_job(
         connection,
@@ -92,6 +95,9 @@ def confirm_upload(connection, asset_id, user):
         if not valid.get(mime):
             raise DomainError(422, "FILE_TYPE_NOT_ALLOWED", "音频格式无效")
     key = immutable_key("private")
+    from app.services.lifecycle import reserve_object
+
+    reserve_object(asset, key)
     store.put(key, data, mime)
     updated = one(
         connection,

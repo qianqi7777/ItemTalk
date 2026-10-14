@@ -628,6 +628,9 @@ a:focus-visible {
   padding: 0 7px;
   color: #556c5b;
 }
+.topbar .ant-btn-dangerous {
+  color: #b4533a;
+}
 .workspace {
   max-width: 1180px;
   margin: auto;

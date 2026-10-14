@@ -19,7 +19,7 @@ class LeaseHeartbeat:
         interval = max(1, settings().lease_seconds // 3)
         while not self.stopped.wait(interval):
             try:
-                with actor(self.job["user_id"]), transaction() as connection:
+                with actor(self.job["user_id"], allow_deleted=True), transaction() as connection:
                     execute(
                         connection,
                         (

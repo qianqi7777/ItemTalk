@@ -43,7 +43,13 @@ def database(tmp_path, monkeypatch):
     engine.cache_clear()
     with transaction() as connection:
         # 测试库迁移由 CI/本地脚本执行；清空数据保留已验证的真实约束。
-        execute(connection, "TRUNCATE users,brands,sources,usage_counters CASCADE")
+        execute(
+            connection,
+            (
+                "TRUNCATE users,brands,sources,usage_counters,private_objects,"
+                "checkpoints,checkpoint_blobs,checkpoint_writes CASCADE"
+            ),
+        )
     yield
     engine().dispose()
     engine.cache_clear()

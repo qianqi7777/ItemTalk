@@ -179,7 +179,7 @@ def test_worker_queue_entry_permissions_and_tenant_context(runtime):
             assert job["user_id"] == UUID(alice["id"])
             with actor(job["user_id"]), transaction() as connection:
                 assert len(many(connection, "SELECT * FROM identification_attempts")) == 1
-            with actor(uuid4()), transaction() as connection:
+            with actor(uuid4(), allow_deleted=True), transaction() as connection:
                 assert many(connection, "SELECT * FROM identification_attempts") == []
 
 

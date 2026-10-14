@@ -81,6 +81,7 @@ def test_expired_upload_cleanup_deletes_only_temporary_object(client):
     with transaction() as connection:
         asset = one(connection, "SELECT * FROM assets WHERE id=:id", id=UUID(signed["assetId"]))
         execute(connection, ("UPDATE jobs SET available_at=now() WHERE job_type='asset_cleanup'"))
+        execute(connection, "UPDATE private_objects SET delete_after=now()-interval '1 second'")
     assert Storage().path(asset["object_key"]).exists()
     assert run_once()
     assert not Storage().path(asset["object_key"]).exists()

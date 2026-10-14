@@ -27,6 +27,7 @@ import { DeviceScene } from '../components/DeviceScene';
 import { ManualPanel } from '../features/manuals/ManualPanel';
 import { MemoryPanel } from '../features/memories/MemoryPanel';
 import { GuidancePanel } from '../features/guidance/GuidancePanel';
+import { DeleteAction } from '../components/DeleteAction';
 
 export function HomePage() {
   const [input, setInput] = useState('');
@@ -216,6 +217,25 @@ export function HomePage() {
             <KnowledgeProgress product={product} job={job} />
           </div>
           <div className="product-actions">
+            <DeleteAction
+              path={`/me/products/${product.id}`}
+              label="删除产品"
+              explanation="该产品的会话、记忆和操作引导将删除。仍被其他资料引用的照片和公共资料会保留。"
+              disabled={busy || chatBusy || guidanceBusy}
+              onBusyChange={setBusy}
+              onDeleted={() => {
+                const remaining = products.filter(
+                  (item) => item.id !== product.id,
+                );
+                setProducts(remaining);
+                setProduct(remaining[0]);
+                setAsset(undefined);
+                setAttempt(undefined);
+                setJob(undefined);
+                setInput('');
+                setError('');
+              }}
+            />
             {products.length > 1 && (
               <Select
                 aria-label="切换产品"
@@ -301,6 +321,16 @@ export function HomePage() {
               </span>
               <small>JPG、PNG、WebP · 最大 10 MB</small>
             </Upload.Dragger>
+            {asset && (
+              <DeleteAction
+                path={`/assets/${asset.id}`}
+                label="删除照片"
+                explanation="这张私有照片将删除。如果它仍被识别、问答或操作引导引用，需要先删除关联内容。"
+                disabled={busy}
+                onBusyChange={setBusy}
+                onDeleted={() => setAsset(undefined)}
+              />
+            )}
             <div className="input-divider">
               <span>也可以用文字开始</span>
             </div>
