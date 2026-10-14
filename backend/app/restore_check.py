@@ -21,7 +21,10 @@ from psycopg import sql
 from sqlalchemy.engine import make_url
 
 from app.backup_assets import archive_assets, file_manifest, restore_assets, verify_references
+from app.backup_cos import object_keys, snapshot_objects
 from app.config import settings
+from app.errors import DomainError
+from app.storage import Storage
 
 
 def canonical_constraint(definition):
@@ -124,9 +127,23 @@ def restore_drill(
     output_directory=Path(".local-data/backups"),
     assets_directory=None,
     writers_paused=False,
+    cos_assets=False,
 ):
     """使用进程环境传递凭据；工具路径由运维显式指定，不接受模型生成命令。"""
     config = settings()
+    if cos_assets:
+        if assets_directory is not None:
+            raise ValueError("Local and COS backup modes are mutually exclusive")
+        if not writers_paused:
+            raise ValueError("Paired backups require paused writers and cleanup workers")
+        if config.storage_backend != "cos" or not all(
+            (
+                config.cos_bucket,
+                config.cos_secret_id.get_secret_value(),
+                config.cos_secret_key.get_secret_value(),
+            )
+        ):
+            raise ValueError("Complete COS configuration is required")
     if assets_directory is not None:
         if not writers_paused:
             raise ValueError("Paired backups require paused writers and cleanup workers")
@@ -136,6 +153,7 @@ def restore_drill(
     url = config.db_url()
     url = make_url(url) if isinstance(url, str) else url
     connect_args = url.translate_connect_args(username="user", database="dbname")
+    connect_args.update(url.query)
     connect_args["connect_timeout"] = 10
     environment = os.environ.copy()
     for name, value in {
@@ -164,6 +182,9 @@ def restore_drill(
     assets_archive = backup.with_suffix(".dump.assets.tar.gz")
     scratch = f"itemtalk_restore_{identifier[:16]}"
     created = False
+    staging = None
+    inventory = None
+    object_storage = None
     try:
         with psycopg.connect(**connect_args) as source:
             source.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -171,6 +192,15 @@ def restore_drill(
             source.execute("SET LOCAL row_security=off")
             snapshot = source.execute("SELECT pg_export_snapshot()").fetchone()[0]
             expected = manifest(source)
+            if cos_assets:
+                # 临时目录由本次演练创建，只删除自己的副本。源COS没有PUT/DELETE。
+                staging = tempfile.TemporaryDirectory(
+                    prefix=f"itemtalk_cos_{identifier}_", dir=output_directory
+                )
+                assets_directory = Path(staging.name)
+                object_storage = Storage()
+                keys = object_keys(source)
+                inventory = snapshot_objects(object_storage, keys, assets_directory)
             files = file_manifest(assets_directory) if assets_directory is not None else None
             referenced_assets = verify_references(source, files) if files is not None else None
             descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -199,6 +229,11 @@ def restore_drill(
                 stable.execute("SET LOCAL row_security=off")
                 if manifest(stable) != expected or file_manifest(assets_directory) != files:
                     raise ValueError("Source changed during the paired backup")
+                if cos_assets and (
+                    object_keys(stable) != keys
+                    or snapshot_objects(object_storage, keys) != inventory
+                ):
+                    raise ValueError("COS objects changed during the paired backup")
         with psycopg.connect(**connect_args, autocommit=True) as admin:
             admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(scratch)))
             created = True
@@ -252,7 +287,12 @@ def restore_drill(
             descriptor = os.open(bundle, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as file:
                 json.dump(
-                    {"formatVersion": 1, "database": expected, "assets": files},
+                    {
+                        "formatVersion": 2 if cos_assets else 1,
+                        "database": expected,
+                        "assets": files,
+                        **({"cosCurrentObjects": inventory} if cos_assets else {}),
+                    },
                     file,
                     ensure_ascii=False,
                     sort_keys=True,
@@ -261,17 +301,29 @@ def restore_drill(
                 bundle_checksum = hashlib.file_digest(file, "sha256").hexdigest()
             checksums += f"{bundle_checksum}  {bundle.name}\n"
             result["manifest"] = str(bundle)
+            if cos_assets:
+                # 此演练证明可从源COS备份恢复到隔离本地文件；目标COS回写须另验。
+                result.update(
+                    assetSource="cos",
+                    assetRestoreTarget="local-isolated",
+                    inventoriedObjects=len(inventory),
+                    missingOptionalObjects=sum(value is None for value in inventory.values()),
+                )
         descriptor = os.open(checksum_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
             file.write(checksums)
         return result
     finally:
-        if created:
-            # scratch 仅由本函数生成，且只有 CREATE 成功后才执行清理。
-            with psycopg.connect(**connect_args, autocommit=True) as admin:
-                admin.execute(
-                    sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(scratch))
-                )
+        try:
+            if created:
+                # scratch 仅由本函数生成，且只有 CREATE 成功后才执行清理。
+                with psycopg.connect(**connect_args, autocommit=True) as admin:
+                    admin.execute(
+                        sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(scratch))
+                    )
+        finally:
+            if staging is not None:
+                staging.cleanup()
 
 
 def main():
@@ -280,6 +332,9 @@ def main():
     parser.add_argument("--output-directory", type=Path, default=Path(".local-data/backups"))
     parser.add_argument("--assets-directory", type=Path, help="Paired local storage root")
     parser.add_argument(
+        "--cos-assets", action="store_true", help="Read database-inventoried COS objects"
+    )
+    parser.add_argument(
         "--writers-paused", action="store_true", help="Confirm API/Worker/other writers are paused"
     )
     args = parser.parse_args()
@@ -287,12 +342,23 @@ def main():
         print(
             json.dumps(
                 restore_drill(
-                    args.pg_bin, args.output_directory, args.assets_directory, args.writers_paused
+                    args.pg_bin,
+                    args.output_directory,
+                    args.assets_directory,
+                    args.writers_paused,
+                    args.cos_assets,
                 ),
                 ensure_ascii=False,
             )
         )
-    except (ValueError, OSError, tarfile.TarError, psycopg.Error, subprocess.SubprocessError):
+    except (
+        ValueError,
+        OSError,
+        tarfile.TarError,
+        psycopg.Error,
+        subprocess.SubprocessError,
+        DomainError,
+    ):
         # 不输出 pg_dump/restore stderr；其中可能包含数据、路径或连接信息。
         parser.exit(
             1, "Backup/restore verification failed; inspect restricted operational state.\n"

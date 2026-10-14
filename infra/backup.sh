@@ -5,6 +5,13 @@ umask 077
 base=/opt/itemtalk
 release=$(readlink -f "$base/current")
 [[ -f $release/.env.image_tag ]] || { echo 'No active release'; exit 1; }
+# 本脚本的tar仅覆盖本地文件；COS不能以空本地目录归档冒充对象备份。
+if ! docker compose --project-name itemtalk --env-file "$base/.env.production" \
+  --env-file "$release/.env.image_tag" -f "$release/docker-compose.yml" \
+  exec -T api python -c 'from app.config import settings; import sys; sys.exit(0 if settings().storage_backend == "local" else 2)'; then
+  echo 'Local-only backup unavailable; use the approved COS paired backup procedure'
+  exit 1
+fi
 mkdir -p "$base/backups"
 target=$base/backups/daily-$(date -u +%Y%m%dT%H%M%SZ).dump
 docker compose --project-name itemtalk --env-file "$base/.env.production" \
