@@ -122,6 +122,21 @@ def manifest(connection):
     }
 
 
+def postgres_clients(pg_bin=None):
+    binaries = {}
+    for name in ("pg_dump", "pg_restore"):
+        if pg_bin:
+            executable = Path(pg_bin) / (name + (".exe" if os.name == "nt" else ""))
+        else:
+            executable = Path(shutil.which(name) or "")
+        if not executable.is_file():
+            raise ValueError("PostgreSQL client binaries are required")
+        # Debian的pg_wrapper按argv[0]分派；resolve会把pg_dump/pg_restore都
+        # 变成pg_wrapper，从而丢失工具名。绝对路径仍须保留最后一级符号链接。
+        binaries[name] = str(executable.absolute())
+    return binaries
+
+
 def restore_drill(
     pg_bin=None,
     output_directory=Path(".local-data/backups"),
@@ -166,15 +181,7 @@ def restore_drill(
     }.items():
         if value is not None:
             environment[name] = str(value)
-    binaries = {}
-    for name in ("pg_dump", "pg_restore"):
-        if pg_bin:
-            executable = Path(pg_bin) / (name + (".exe" if os.name == "nt" else ""))
-        else:
-            executable = Path(shutil.which(name) or "")
-        if not executable.is_file():
-            raise ValueError("PostgreSQL client binaries are required")
-        binaries[name] = str(executable.resolve())
+    binaries = postgres_clients(pg_bin)
     output_directory = Path(output_directory).resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     identifier = uuid4().hex
