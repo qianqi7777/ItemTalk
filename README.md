@@ -86,7 +86,11 @@ uv run python -m app.cli smoke --paid --image <本地铭牌图片路径> --audio
 
 同时启动多个本地回归实例时，Vite 可通过 `DEV_API_PROXY_TARGET` 指定独立 API 地址，Playwright 可通过 `E2E_BASE_URL` 指定独立前端地址；这些变量不包含供应商密钥，也不进入生产模型配置。
 
-核验人员准备 Gold Set JSON 后，可运行 `uv run python -m app.evaluate <数据集路径> --paid`。每项包含型号 ID、问题、预期文档版本 ID、页码及地区/硬件修订，输出 Recall@10、页码/适用性和无依据指标。mock 分数仅检查评测工具，不作为真实质量结论。
+核验人员准备 Gold Set JSON 后，可运行 `uv run python -m app.evaluate <数据集路径> --paid`。每项包含型号 ID、问题、预期文档版本及片段 ID、页码和地区/硬件修订，输出文档/片段 Recall@10、MRR@10、页码/适用性及检索为空指标。检索为空不代表模型会拒答，mock 分数仅检查评测工具。
+
+加 `--answers` 才实际生成回答并统计引用有效性、人工标注引用目标、关键事实和无依据拒答。`expectedFacts` 每组是同一事实的文字备选值，`forbiddenFacts` 标记不应出现的错误事实；`allowedCitationChunkIds` 可注明其他同样支持事实的片段，避免重复章节被误报。加 `--report <新文件>` 可保存受限详细报告供人工核对逐句支持与安全；命令不覆盖已有报告。自动字面/引用指标与单一产品样例不能替代全面质量验收，真实模型和向量请求均消耗供应商额度。
+
+额度或供应商中断时，评测停止后续调用，保留已经完整评完的样例；报告明确标记 `evaluationStatus=interrupted`、请求数和完成数，命令非零退出。未完成样例不混入指标分母，部分报告不能作为整套验收通过依据。
 
 公共来源使用独立可信域名注册表，由运营人员核验品牌官网后维护：
 
