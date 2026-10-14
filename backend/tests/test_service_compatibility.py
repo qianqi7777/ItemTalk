@@ -71,6 +71,45 @@ def test_search_rejects_business_errors_even_with_http_200(monkeypatch):
     settings.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "operation,output",
+    [
+        (
+            "memory",
+            {"memories": [{"memoryType": "preference", "content": "偏好简短中文"}]},
+        ),
+        ("gap", {"category": "power"}),
+        ("observation", {"observation": "可见蓝色指示灯", "uncertainty": "无法确认配对状态"}),
+    ],
+)
+def test_structured_roles_request_json_mode_instead_of_markdown(operation, output, monkeypatch):
+    requests = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        content = json.dumps(output, ensure_ascii=False)
+        # 复现真实百炼失败：未声明JSON模式时，即便提示只输出JSON仍可能套Markdown。
+        if payload.get("response_format") != {"type": "json_object"}:
+            content = f"```json\n{content}\n```"
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        gateway = ModelGateway(client)
+        gateway.config = Settings(
+            model_provider="dashscope", model_api_key="test-key", vision_api_key="test-key"
+        )
+        monkeypatch.setattr(gateway, "budget", lambda subject: None)
+        if operation == "memory":
+            result = gateway.extract_memories("我喜欢简短的中文回答", "user")
+        elif operation == "gap":
+            result = gateway.gap_intent("如何开机？", "user")
+        else:
+            result = gateway.observe_guidance([(b"image", "image/png")], "配对", "查看灯", "user")
+        assert result.model_dump() == output
+    assert requests[0]["enable_thinking"] is False
+
+
 def test_upstream_error_does_not_expose_credential_like_code():
     error = response_error(
         httpx.Response(401, json={"error": {"code": "sk-test-sensitive", "message": "private"}})
