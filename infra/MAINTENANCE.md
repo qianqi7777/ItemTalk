@@ -4,12 +4,16 @@
 
 ## 必须先准备的证据
 
-- 最终代码提交、该完整 SHA 的成功 CI，以及同 SHA 的 API、前端和数据库镜像摘要。当前门禁会跳过镜像发布，维护版本必须另行准备并审核镜像发布步骤。
+- 最终代码提交、该完整 SHA 的成功 CI，以及同 SHA 的 API、前端和数据库镜像摘要。`Deploy` 继续跳过维护版本镜像发布和服务器部署；独立的 `Maintenance images` 工作流只准备维护镜像及发布配置包，不连接服务器。
 - 真实模型、检索、受限 Agent、语音和 COS 的验收报告。单一产品的文字样例、mock 流程和已有测试通过不能替代全部供应商质量验收；中断报告不满足门禁。
 - 当前发布路径、数据库 revision、数据库/文件大小、剩余磁盘容量和运行服务状态；只输出必要元数据，不显示环境变量值、账号内容或私有资产内容。
 - 数据库、上传文件、原应用配置及角色/权限恢复依据的受限备份。数据库与文件须在同一停写窗口中配对生成，并在隔离目标实际恢复核验。
 - 独立管理员、迁移、API、Worker 角色和新配置准备就绪；只有变量名可写入操作记录。API/Worker 无所有权、超级用户或 BYPASSRLS；不得沿用旧应用管理员连接。
 - 用户明确确认停写窗口、恢复点以及可接受的失败/回滚时间。
+
+`Maintenance images` 只接受本仓库 main 的成功 push CI，手动指定也核对同一完整 SHA 的成功 CI。核验三个摘要镜像可拉取且 OCI revision 等于目标 SHA 后，保存 `release.json`、`image-overrides.env`、`release-config.tar` 及 `release.sha256`；归档只取该提交跟踪的 Compose、SQL、infra，不夹带本地设计文档或生产配置。目标 revision 来自镜像内离线 `alembic heads`，不是当前生产 revision。
+
+执行前下载并核对全部校验和，复核 JSON 中的 SHA、CI、revision 与镜像摘要。将审核后的 `image-overrides.env` 保存为本次发布目录的 `.env.image_tag`，继续分开加载服务器受限生产配置。Compose 的 API/Worker/migration 使用同一个 `API_IMAGE`，DB/前端分别用对应摘要；未提供摘要时保留旧 SHA 标签启动方式。摘要记录不会随标签重建而改变，维护操作不得以运行旧 `deploy.sh` 来替代停写/配对恢复流程。
 
 ## 停写与备份
 

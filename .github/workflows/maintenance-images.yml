@@ -1,0 +1,146 @@
+name: Maintenance images
+'on':
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full SHA with successful main push CI
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: maintenance-images-${{ github.event.inputs.commit_sha || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    # PR/fork完成事件没有发布权限；只接收本仓库main的成功push CI。
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      ci_run: ${{ steps.commit.outputs.ci_run }}
+      publishable: ${{ steps.compatibility.outputs.publishable }}
+    steps:
+    - name: Verify fixed commit and successful main CI
+      id: commit
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REQUESTED_SHA: ${{ github.event.inputs.commit_sha || github.event.workflow_run.head_sha }}
+      run: |
+        set -euo pipefail
+        sha="$REQUESTED_SHA"
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Full SHA required'; exit 2; }
+        ci_run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+          -f head_sha="$sha" -f branch=main -f event=push -f per_page=100 \
+          --jq '.workflow_runs | map(select(.status == "completed" and .conclusion == "success")) | first | .id')
+        [[ "$ci_run" =~ ^[1-9][0-9]*$ ]] || { echo 'Successful main push CI required'; exit 2; }
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "ci_run=$ci_run" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.commit.outputs.sha }}
+        persist-credentials: false
+    - name: Require maintenance compatibility marker
+      id: compatibility
+      run: |
+        set -euo pipefail
+        if [[ $(cat infra/schema-compatibility.txt) == requires-maintenance ]]; then
+          test -f infra/release_manifest.py || { echo 'Candidate lacks maintenance packaging tools'; exit 2; }
+          echo 'publishable=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'publishable=false' >> "$GITHUB_OUTPUT"
+          echo 'This workflow only prepares maintenance release images.' >> "$GITHUB_STEP_SUMMARY"
+        fi
+  publish:
+    needs: validate
+    if: needs.validate.outputs.publishable == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.validate.outputs.sha }}
+        persist-credentials: false
+    - uses: docker/setup-buildx-action@v3
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Publish API
+      id: api
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        platforms: linux/amd64
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-api:sha-${{ needs.validate.outputs.sha }}
+        labels: |
+          org.opencontainers.image.revision=${{ needs.validate.outputs.sha }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+    - name: Publish database
+      id: db
+      uses: docker/build-push-action@v5
+      with:
+        context: ./infra
+        file: ./infra/Dockerfile.postgres
+        platforms: linux/amd64
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-db:sha-${{ needs.validate.outputs.sha }}
+        labels: |
+          org.opencontainers.image.revision=${{ needs.validate.outputs.sha }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+    - name: Publish frontend
+      id: frontend
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        platforms: linux/amd64
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-frontend:sha-${{ needs.validate.outputs.sha }}
+        labels: |
+          org.opencontainers.image.revision=${{ needs.validate.outputs.sha }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        build-args: |
+          VITE_BASE_PATH=/itemtalk/
+          VITE_API_BASE_URL=/itemtalk/api/v1
+    - name: Verify published bytes and create release record
+      env:
+        RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+        CI_RUN_ID: ${{ needs.validate.outputs.ci_run }}
+        API_DIGEST: ${{ steps.api.outputs.digest }}
+        DB_DIGEST: ${{ steps.db.outputs.digest }}
+        FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+      run: |
+        set -euo pipefail
+        # 使用摘要实际拉取并核对镜像自身的源码SHA，不以标签存在代替验证。
+        for kind in api db frontend; do
+          name="${kind^^}_DIGEST"
+          digest="${!name}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Image digest missing'; exit 2; }
+          reference="ghcr.io/qianqi7777/itemtalk-$kind@$digest"
+          docker pull "$reference" >/dev/null
+          actual=$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+          [[ "$actual" == "$RELEASE_SHA" ]] || { echo 'Image revision mismatch'; exit 2; }
+        done
+        # heads是离线迁移元数据命令；不连接数据库或加载生产环境配置。
+        head=$(docker run --rm --entrypoint python "ghcr.io/qianqi7777/itemtalk-api@$API_DIGEST" -m alembic heads)
+        [[ $(printf '%s\n' "$head" | wc -l) == 1 ]] || { echo 'Single migration head required'; exit 2; }
+        export SCHEMA_REVISION="${head%% *}"
+        python3 infra/release_manifest.py --output-directory release-record
+        git archive "$RELEASE_SHA" docker-compose.yml init-extensions.sql infra > release-record/release-config.tar
+        (cd release-record && sha256sum release.json image-overrides.env release-config.tar > release.sha256)
+        echo "Prepared maintenance images for $RELEASE_SHA; server deployment requires separate approval." >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: maintenance-release-${{ needs.validate.outputs.sha }}-${{ github.run_id }}
+        path: release-record/
+        retention-days: 30
+        if-no-files-found: error

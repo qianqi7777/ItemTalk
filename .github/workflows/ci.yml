@@ -56,6 +56,11 @@ jobs:
     - name: Format check
       working-directory: backend
       run: uv run ruff format --check .
+    - name: Check maintenance release tooling
+      working-directory: backend
+      run: |
+        uv run ruff check --config pyproject.toml ../infra/release_manifest.py
+        uv run ruff format --check --config pyproject.toml ../infra/release_manifest.py
     - name: Create extensions
       run: |
         PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "CREATE EXTENSION IF NOT EXISTS vector;"

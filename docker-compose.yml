@@ -1,6 +1,6 @@
 services:
   db:
-    image: ghcr.io/qianqi7777/itemtalk-db:${IMAGE_TAG:?Set fixed release tag}
+    image: ${DB_IMAGE:-ghcr.io/qianqi7777/itemtalk-db:${IMAGE_TAG:?Set fixed release tag}}
     environment:
       POSTGRES_DB: itemtalk
       POSTGRES_USER: itemtalk_admin
@@ -24,7 +24,7 @@ services:
     networks:
     - itemtalk
   api:
-    image: ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}
+    image: ${API_IMAGE:-ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}}
     environment:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
@@ -97,7 +97,7 @@ services:
     networks:
     - itemtalk
   worker:
-    image: ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}
+    image: ${API_IMAGE:-ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}}
     environment:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
@@ -165,7 +165,7 @@ services:
     networks:
     - itemtalk
   caddy:
-    image: ghcr.io/qianqi7777/itemtalk-frontend:${IMAGE_TAG:?Set fixed release tag}
+    image: ${FRONTEND_IMAGE:-ghcr.io/qianqi7777/itemtalk-frontend:${IMAGE_TAG:?Set fixed release tag}}
     ports:
     - 127.0.0.1:8400:8080
     volumes:
@@ -178,7 +178,7 @@ services:
     depends_on:
     - api
   migration:
-    image: ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}
+    image: ${API_IMAGE:-ghcr.io/qianqi7777/itemtalk-api:${IMAGE_TAG:?Set fixed release tag}}
     profiles:
     - maintenance
     environment:

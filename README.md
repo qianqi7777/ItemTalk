@@ -132,3 +132,5 @@ COS 可用 `uv run python -m app.restore_check --cos-assets --writers-paused --o
 从服务器试用的本地存储改为正式 COS 前，可用 `uv run python -m app.storage_transfer --assets-directory <原资产目录> --writers-paused --report <新报告文件>` 生成复制计划。实际写入需另加 `--apply`，且先按 [维护清单](infra/MAINTENANCE.md)确认备份和停写方案。工具逐文件核对 SHA-256 与大小、复用同内容目标、拒绝覆盖冲突，不改源数据库/文件或桶权限；目标桶须满足私有访问和无版本保留的前置条件。
 
 服务器部署、Nginx 修改和定时器安装都须先确认具体方案。代码实现和本地验证不会自动改变现有服务器。
+
+维护版本由 `Maintenance images` 工作流准备镜像：仅接受本仓库 `main` 的成功 push CI（手动运行须提供完整 SHA），源提交须包含维护打包工具且标记为 `requires-maintenance`。工作流发布并实际拉取 API、前端、数据库镜像，核对各镜像源码 SHA，生成摘要引用、目标迁移 revision 和受校验和保护的发布配置包；它没有 SSH 或服务器部署步骤。维护操作采用产物 `image-overrides.env` 中的 `API_IMAGE`、`DB_IMAGE`、`FRONTEND_IMAGE` 摘要引用，与服务器受限生产配置分别加载。产物保留 30 天，上线前须保存审核后的副本；镜像发布成功不代表 COS、备份恢复或服务器上线已通过。
