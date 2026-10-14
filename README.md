@@ -127,4 +127,6 @@ uv run python -m app.cli register-source --brand <品牌> --url <官方资料链
 
 本地文件存储的完整配对演练需先暂停 API、Worker 及其他写入/清理入口，然后运行 `uv run python -m app.restore_check --assets-directory <资产根目录> --writers-paused --output-directory <资产目录外的备份目录>`。命令配对导出 dump、文件归档和摘要清单，再在新数据库及空目录中实际恢复，核验全部文件字节与已确认资产的数据库哈希/大小；缺失、损坏、链接或路径越界会失败。演练结束清理临时目标，保留备份、受限清单及校验和；此模式只验收本地存储，不代替 COS 对象恢复。
 
+从服务器试用的本地存储改为正式 COS 前，可用 `uv run python -m app.storage_transfer --assets-directory <原资产目录> --writers-paused --report <新报告文件>` 生成复制计划。实际写入需另加 `--apply`，且先按 [维护清单](infra/MAINTENANCE.md)确认备份和停写方案。工具逐文件核对 SHA-256 与大小、复用同内容目标、拒绝覆盖冲突，不改源数据库/文件或桶权限；目标桶须满足私有访问和无版本保留的前置条件。
+
 服务器部署、Nginx 修改和定时器安装都须先确认具体方案。代码实现和本地验证不会自动改变现有服务器。
