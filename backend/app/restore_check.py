@@ -94,8 +94,15 @@ def manifest(connection):
         "ARRAY(SELECT a::text FROM unnest(p.proacl) a ORDER BY a::text),p.prosrc "
         "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
         "JOIN pg_roles r ON r.oid=p.proowner WHERE n.nspname='public' AND "
-        "p.proname IN ('itemtalk_actor','itemtalk_register','itemtalk_login',"
-        "'itemtalk_queue_recover','itemtalk_queue_claim') ORDER BY p.proname"
+        "NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.objid=p.oid "
+        "AND d.classid='pg_proc'::regclass AND d.deptype='e') "
+        "ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)"
+    ).fetchall()
+    triggers = connection.execute(
+        "SELECT c.relname,t.tgname,t.tgenabled,pg_get_triggerdef(t.oid) "
+        "FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' "
+        "AND NOT t.tgisinternal ORDER BY c.relname,t.tgname"
     ).fetchall()
     return {
         "tables": results,
@@ -105,6 +112,7 @@ def manifest(connection):
         "columnGrants": column_grants,
         "policies": policies,
         "functions": functions,
+        "triggers": triggers,
     }
 
 

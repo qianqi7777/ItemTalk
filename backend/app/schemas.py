@@ -192,3 +192,32 @@ class GuidancePlan(StrictModel):
 class GuidanceObservation(StrictModel):
     observation: str = Field(min_length=1, max_length=1500)
     uncertainty: str = Field(max_length=500)
+
+
+class ManualJobRequest(StrictModel):
+    userProductInstanceId: UUID | None = None
+
+
+class SectionJobRequest(StrictModel):
+    sectionIds: list[UUID] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def unique_sections(self):
+        if len(set(self.sectionIds)) != len(self.sectionIds):
+            raise ValueError("章节不能重复")
+        return self
+
+
+class PersonalChapterNote(StrictModel):
+    text: str = Field(min_length=1, max_length=1000)
+    memoryIds: list[UUID] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def unique_memory(self):
+        if len(set(self.memoryIds)) != len(self.memoryIds):
+            raise ValueError("个人补充的记忆引用不能重复")
+        return self
+
+
+class ChapterPersonalization(StrictModel):
+    notes: list[PersonalChapterNote] = Field(default_factory=list, max_length=10)

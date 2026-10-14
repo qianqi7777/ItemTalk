@@ -86,6 +86,8 @@ export interface ManualSection {
   body: string | null;
   generationStatus: string;
   citations: Citation[];
+  reused?: boolean;
+  personalNotes?: { text: string }[];
 }
 export interface Manual {
   id: string;
@@ -93,11 +95,17 @@ export interface Manual {
   version: number;
   jobId: string | null;
   sections: ManualSection[];
+  visibility?: 'public' | 'private';
+  inputsStale?: boolean;
+  contextStale?: boolean;
+  personalContext?: { memoryType: Memory['memoryType']; content: string }[];
+  coverage?: { totalChunks: number; citedChunks: number };
   latestBuild?: {
     id: string;
     version: number;
     status: string;
     jobId: string | null;
+    inputsStale?: boolean;
   } | null;
 }
 export interface Memory {

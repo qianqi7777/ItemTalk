@@ -31,7 +31,8 @@ def test_manual_generation_and_immutable_versions(client):
     path = f"/products/{product['productModelId']}/manual"
     initial = client.get("/api/v1" + path).json()
     assert initial["status"] == "pending"
-    assert len(initial["sections"]) == 3
+    assert len(initial["sections"]) == 4
+    assert initial["sections"][-1]["sectionKey"].startswith("source-")
     assert run_once(UUID(initial["jobId"]))
     manual = client.get("/api/v1" + path).json()
     assert manual["status"] == "ready" and manual["version"] == 1

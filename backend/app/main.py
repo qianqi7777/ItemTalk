@@ -25,8 +25,10 @@ from app.schemas import (
     IdentifyRequest,
     InstanceRequest,
     KnowledgeRequest,
+    ManualJobRequest,
     MessageRequest,
     PresignRequest,
+    SectionJobRequest,
 )
 from app.security import (
     consume,
@@ -645,13 +647,22 @@ def submit_message_feedback(message_id: UUID, body: FeedbackRequest, current=Dep
 
 
 @app.get("/api/v1/products/{model_id}/manual")
-def get_manual(model_id: UUID, current=Depends(user), instanceId: UUID | None = None):
+def get_manual(
+    model_id: UUID, response: Response, current=Depends(user), instanceId: UUID | None = None
+):
+    # 同一型号URL可带个人实例与确认状态，不能由共享代理或浏览器缓存复用。
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
     with transaction() as connection:
         return manuals.get_manual(connection, model_id, current["id"], instanceId)
 
 
 @app.get("/api/v1/manuals/{manual_id}/sections/{section_id}")
-def get_manual_section(manual_id: UUID, section_id: UUID, current=Depends(user)):
+def get_manual_section(
+    manual_id: UUID, section_id: UUID, response: Response, current=Depends(user)
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
     with transaction() as connection:
         manuals.authorized(connection, manual_id, current["id"])
         section = one(
@@ -668,10 +679,12 @@ def get_manual_section(manual_id: UUID, section_id: UUID, current=Depends(user))
 @app.post("/api/v1/products/{model_id}/manual-jobs", status_code=202)
 def create_manual_job(
     model_id: UUID,
+    body: ManualJobRequest | None = None,
     current=Depends(user),
     key: str = Header(alias="Idempotency-Key"),
     retry: UUID | None = Header(default=None, alias="Retry-Of"),
 ):
+    body = body or ManualJobRequest()
     with transaction() as connection:
         instance = one(
             connection,
@@ -684,12 +697,20 @@ def create_manual_job(
         )
         if not instance and not current["is_admin"]:
             missing()
+        if body.userProductInstanceId:
+            instance = products.owned(
+                connection, "instances", body.userProductInstanceId, current["id"]
+            )
+            if instance["product_model_id"] != model_id:
+                missing()
         operation = f"products/{model_id}/manual-jobs"
-        body = {"retry": str(retry) if retry else None}
-        previous = idempotent(connection, current["id"], operation, key, body)
+        request_body = {**body.model_dump(mode="json"), "retry": str(retry) if retry else None}
+        previous = idempotent(connection, current["id"], operation, key, request_body)
         if previous:
             return previous["response_snapshot"]
-        manual = manuals.schedule(connection, model_id, retry)
+        manual = manuals.schedule(
+            connection, model_id, retry, instance_id=body.userProductInstanceId, user=current["id"]
+        )
         if not manual:
             raise DomainError(422, "EVIDENCE_INSUFFICIENT", "资料核验完成后才能生成说明书")
         if instance:
@@ -706,7 +727,57 @@ def create_manual_job(
         result = products.job_view(
             one(connection, "SELECT * FROM jobs WHERE id=:id", id=manual["job_id"])
         )
-        remember(connection, current["id"], operation, key, body, manual["job_id"], result, 202)
+        remember(
+            connection, current["id"], operation, key, request_body, manual["job_id"], result, 202
+        )
+        return result
+
+
+@app.post("/api/v1/manuals/{manual_id}/section-jobs", status_code=202)
+def create_section_job(
+    manual_id: UUID,
+    body: SectionJobRequest,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+):
+    with transaction() as connection:
+        manual = manuals.authorized(connection, manual_id, current["id"])
+        if manual["visibility"] == "public":
+            owned_instance = one(
+                connection,
+                (
+                    "SELECT id FROM user_product_instances WHERE user_id=:u AND "
+                    "product_model_id=:m AND deleted_at IS NULL LIMIT 1"
+                ),
+                u=current["id"],
+                m=manual["product_model_id"],
+            )
+            if not owned_instance and not current["is_admin"]:
+                missing()
+        operation = f"manuals/{manual_id}/section-jobs"
+        request_body = body.model_dump(mode="json")
+        previous = idempotent(connection, current["id"], operation, key, request_body)
+        if previous:
+            return previous["response_snapshot"]
+        job = manuals.enqueue_sections(connection, manual_id, current["id"], body.sectionIds)
+        instance_id = (
+            manual["user_product_instance_id"]
+            if manual["visibility"] == "private"
+            else (owned_instance["id"] if owned_instance else None)
+        )
+        if instance_id:
+            execute(
+                connection,
+                (
+                    "INSERT INTO job_request_links(job_id,user_id,user_product_instance_id) "
+                    "VALUES(:j,:u,:i) ON CONFLICT DO NOTHING"
+                ),
+                j=job["id"],
+                u=current["id"],
+                i=instance_id,
+            )
+        result = products.job_view(job)
+        remember(connection, current["id"], operation, key, request_body, job["id"], result, 202)
         return result
 
 

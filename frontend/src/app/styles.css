@@ -1887,6 +1887,14 @@ a:focus-visible {
   grid-template-columns: minmax(160px, 230px) minmax(0, 1fr);
   gap: 24px;
 }
+.manual-content aside {
+  padding: 12px 14px;
+  margin-block: 12px;
+  border-left: 3px solid #5b7c62;
+  border-radius: 7px;
+  background: #f0f5ef;
+  overflow-wrap: anywhere;
+}
 .manual-layout nav ul {
   list-style: none;
   padding-left: 12px;

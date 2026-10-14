@@ -52,7 +52,54 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   }).toPass({ timeout: 15000 });
   await page.getByRole('button', { name: '确认记住' }).click();
   await expect(page.getByText('全局偏好 · 已确认')).toBeVisible();
-  await page.getByRole('button', { name: '删除记忆' }).click();
+  await page
+    .getByLabel('提问内容')
+    .fill('请记住当前产品开启节能模式，如何开机？');
+  await page.getByRole('button', { name: '发送问题' }).click();
+  await expect(async () => {
+    await page.getByRole('button', { name: '刷新记忆' }).click();
+    await expect(page.getByRole('button', { name: '确认记住' })).toBeVisible();
+  }).toPass({ timeout: 15000 });
+  await page.getByRole('button', { name: '确认记住' }).click();
+  await expect(page.getByText('当前产品 · 已确认')).toBeVisible();
+  await page
+    .getByRole('button', { name: '生成我的说明书', exact: true })
+    .click();
+  await expect(page.getByText('实例专属 · 仅本人可见')).toBeVisible();
+  await expect(page.getByLabel('本章个人补充')).toContainText(
+    '当前产品开启节能模式',
+    { timeout: 30000 },
+  );
+  await page.screenshot({
+    path: 'test-results/v1-personal-manual-desktop.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: 'test-results/v1-personal-manual-mobile.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '通用说明书', exact: true }).click();
+  await expect(page.getByText('通用核验资料')).toBeVisible();
+  await expect(page.getByLabel('已确认的个人设置')).toHaveCount(0);
+  await page.getByRole('button', { name: '我的说明书', exact: true }).click();
+  await expect(page.getByLabel('本章个人补充')).toBeVisible();
+  while (
+    await page.getByRole('button', { name: '删除记忆', exact: true }).count()
+  ) {
+    const count = await page
+      .getByRole('button', { name: '删除记忆', exact: true })
+      .count();
+    await page
+      .getByRole('button', { name: '删除记忆', exact: true })
+      .first()
+      .click();
+    await expect(
+      page.getByRole('button', { name: '删除记忆', exact: true }),
+    ).toHaveCount(count - 1);
+  }
+  await expect(page.getByLabel('本章个人补充')).toHaveCount(0);
   await expect(page.getByText(/暂无记忆/)).toBeVisible();
   await page.getByRole('button', { name: '操作引导' }).click();
   await page.getByLabel('你想完成什么操作？').fill('如何开机');

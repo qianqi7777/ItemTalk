@@ -76,6 +76,9 @@ export function MemoryPanel({ instanceId }: { instanceId: string }) {
                     onClick={() =>
                       void run(async () => {
                         await post(`/me/memories/${memory.id}/confirm`, {});
+                        window.dispatchEvent(
+                          new Event('itemtalk-memory-change'),
+                        );
                         await load();
                       })
                     }
@@ -92,6 +95,7 @@ export function MemoryPanel({ instanceId }: { instanceId: string }) {
                       await api(`/me/memories/${memory.id}`, {
                         method: 'DELETE',
                       });
+                      window.dispatchEvent(new Event('itemtalk-memory-change'));
                       await load();
                     })
                   }

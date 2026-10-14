@@ -37,5 +37,7 @@ def test_restore_manifest_detects_rls_and_column_permission_changes(database):
         assert manifest(connection)["securityTables"] != before["securityTables"]
         connection.execute("REVOKE UPDATE(display_name) ON users FROM itemtalk_app")
         assert manifest(connection)["columnGrants"] != before["columnGrants"]
+        connection.execute("ALTER TABLE manuals DISABLE TRIGGER protect_manual_generation")
+        assert manifest(connection)["triggers"] != before["triggers"]
         # 本测试只检查演练的检测能力，不把降级后的测试权限持久化。
         connection.rollback()
