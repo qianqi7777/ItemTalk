@@ -11,6 +11,8 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ import psycopg
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
+from app.backup_assets import archive_assets, file_manifest, restore_assets, verify_references
 from app.config import settings
 
 
@@ -116,11 +119,24 @@ def manifest(connection):
     }
 
 
-def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
+def restore_drill(
+    pg_bin=None,
+    output_directory=Path(".local-data/backups"),
+    assets_directory=None,
+    writers_paused=False,
+):
     """使用进程环境传递凭据；工具路径由运维显式指定，不接受模型生成命令。"""
-    url = settings().db_url()
+    config = settings()
+    if assets_directory is not None:
+        if not writers_paused:
+            raise ValueError("Paired backups require paused writers and cleanup workers")
+        if config.storage_backend != "local":
+            raise ValueError("Local asset archive cannot verify COS object recovery")
+        assets_directory = Path(assets_directory)
+    url = config.db_url()
     url = make_url(url) if isinstance(url, str) else url
     connect_args = url.translate_connect_args(username="user", database="dbname")
+    connect_args["connect_timeout"] = 10
     environment = os.environ.copy()
     for name, value in {
         "PGHOST": url.host,
@@ -128,6 +144,7 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
         "PGUSER": url.username,
         "PGDATABASE": url.database,
         "PGPASSWORD": url.password or "",
+        "PGCONNECT_TIMEOUT": 10,
     }.items():
         if value is not None:
             environment[name] = str(value)
@@ -144,6 +161,7 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
     output_directory.mkdir(parents=True, exist_ok=True)
     identifier = uuid4().hex
     backup = output_directory / f"restore-drill-{identifier}.dump"
+    assets_archive = backup.with_suffix(".dump.assets.tar.gz")
     scratch = f"itemtalk_restore_{identifier[:16]}"
     created = False
     try:
@@ -153,6 +171,8 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
             source.execute("SET LOCAL row_security=off")
             snapshot = source.execute("SELECT pg_export_snapshot()").fetchone()[0]
             expected = manifest(source)
+            files = file_manifest(assets_directory) if assets_directory is not None else None
+            referenced_assets = verify_references(source, files) if files is not None else None
             descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "wb") as file:
                 # 固定 pg_dump 参数；密码只在 environment，不在 argv 或日志中。
@@ -168,7 +188,17 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
                     stderr=subprocess.PIPE,
                     check=True,
                     timeout=300,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
+            if files is not None:
+                archive_assets(assets_directory, assets_archive, files)
+        # 写入暂停是配对的一致性前提；再次核验DB和文件，拒绝演练期间的实际变化。
+        if files is not None:
+            with psycopg.connect(**connect_args) as stable:
+                stable.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                stable.execute("SET LOCAL row_security=off")
+                if manifest(stable) != expected or file_manifest(assets_directory) != files:
+                    raise ValueError("Source changed during the paired backup")
         with psycopg.connect(**connect_args, autocommit=True) as admin:
             admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(scratch)))
             created = True
@@ -185,21 +215,56 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
             capture_output=True,
             check=True,
             timeout=300,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         with psycopg.connect(**{**connect_args, "dbname": scratch}) as restored:
             actual = manifest(restored)
             if actual != expected:
                 raise ValueError("Restored database differs from the consistent snapshot")
+            if files is not None:
+                # TemporaryDirectory是本次创建的独立目标；归档不能链接到其他目录。
+                with tempfile.TemporaryDirectory(
+                    prefix=f"itemtalk_assets_{identifier}_", dir=output_directory
+                ) as restored_directory:
+                    restore_assets(assets_archive, restored_directory, files)
+                    verify_references(restored, file_manifest(restored_directory))
         with backup.open("rb") as file:
             checksum = hashlib.file_digest(file, "sha256").hexdigest()
         checksum_file = backup.with_suffix(".dump.sha256")
-        checksum_file.write_text(f"{checksum}  {backup.name}\n", encoding="utf-8")
-        return {
+        checksums = f"{checksum}  {backup.name}\n"
+        result = {
             "status": "passed",
             "tables": len(expected["tables"]),
             "rows": sum(table["rows"] for table in expected["tables"].values()),
             "backup": str(backup),
         }
+        if files is not None:
+            with assets_archive.open("rb") as file:
+                assets_checksum = hashlib.file_digest(file, "sha256").hexdigest()
+            checksums += f"{assets_checksum}  {assets_archive.name}\n"
+            result.update(
+                assetFiles=len(files),
+                assetBytes=sum(file["sizeBytes"] for file in files.values()),
+                referencedAssets=referenced_assets,
+                assetsArchive=str(assets_archive),
+            )
+            bundle = backup.with_suffix(".dump.manifest.json")
+            descriptor = os.open(bundle, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                json.dump(
+                    {"formatVersion": 1, "database": expected, "assets": files},
+                    file,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            with bundle.open("rb") as file:
+                bundle_checksum = hashlib.file_digest(file, "sha256").hexdigest()
+            checksums += f"{bundle_checksum}  {bundle.name}\n"
+            result["manifest"] = str(bundle)
+        descriptor = os.open(checksum_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            file.write(checksums)
+        return result
     finally:
         if created:
             # scratch 仅由本函数生成，且只有 CREATE 成功后才执行清理。
@@ -213,10 +278,21 @@ def main():
     parser = argparse.ArgumentParser(description="Verify backup in an isolated restore database")
     parser.add_argument("--pg-bin", type=Path)
     parser.add_argument("--output-directory", type=Path, default=Path(".local-data/backups"))
+    parser.add_argument("--assets-directory", type=Path, help="Paired local storage root")
+    parser.add_argument(
+        "--writers-paused", action="store_true", help="Confirm API/Worker/other writers are paused"
+    )
     args = parser.parse_args()
     try:
-        print(json.dumps(restore_drill(args.pg_bin, args.output_directory), ensure_ascii=False))
-    except (ValueError, OSError, psycopg.Error, subprocess.SubprocessError):
+        print(
+            json.dumps(
+                restore_drill(
+                    args.pg_bin, args.output_directory, args.assets_directory, args.writers_paused
+                ),
+                ensure_ascii=False,
+            )
+        )
+    except (ValueError, OSError, tarfile.TarError, psycopg.Error, subprocess.SubprocessError):
         # 不输出 pg_dump/restore stderr；其中可能包含数据、路径或连接信息。
         parser.exit(
             1, "Backup/restore verification failed; inspect restricted operational state.\n"
