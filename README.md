@@ -139,4 +139,6 @@ COS 定时备份使用独立 `backup` 运维容器，包含 PostgreSQL 16 客户
 
 运行前须为 `/opt/itemtalk/backups` 准备与 `BACKUP_UID/BACKUP_GID` 一致的受限所有权，确认 DB 已运行并预留恢复空间。`BACKUP_COS_SECRET_ID/KEY` 只读应用资产；独立 `DB_BACKUP_COS_*` 从服务器受限 `.env.backup` 加载，不回退到应用桶。已上传核验的本地备份保留 7 天，COS 长期保留且无自动删除接口。默认 `BACKUP_JOBS_ENABLED=false`、告警渠道未连接。详细配置、重试状态、真实测试入口和部署/回滚要求见 [备份与告警方案](infra/BACKUP_AND_ALERTS.md)及 [配置模板](infra/backup.env.example)。Mock 测试、真实服务待验收和生产未启用必须分别记录。
 
+完整上线审核包见 [V1生产执行方案](infra/V1_PRODUCTION_PLAN.md)，包含环境变量位置、控制台联系人与最小权限、逐项真实验收、停写与回滚。可选SMTP后备 `python -m app.ops_mail --env-file <受限文件>` 默认只检查配置，明确真实测试开关、参数及新报告齐备后才单次投递；SMTP接受仍不能证明邮件送达。生产启用及真实测试必须分别确认，准备完成后停止等待。
+
 真实 COS 供应商预检可在本地 `backend` 运行 `uv run python -m app.cos_probe --real-cos --origin https://49.233.65.195 --report ../.cache/cos-probe-<本轮唯一标识>.json`。需先在本地 `.env` 填入 COS 四个变量，报告独占创建；该命令只为本轮新建合成图片对象，核对私有桶、前端 Origin 的 PUT/GET 与 Content-Type CORS、签名上传/读取、临时键覆盖不影响私有副本，以及本地归档恢复字节到 COS。清理前核对对象 nonce，不删归属不符的对象；强制退出或清理失败须依据受限报告人工核对残留。程序无数据库/模型调用，SDK和HTTP响应不输出到日志、响应限4KiB、15秒超时且无自动重试；报告只能证明供应商协议，应用权限和数据库配对恢复另需验收。

@@ -521,6 +521,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "pypdf" },
+    { name = "python-dotenv" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -551,6 +552,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = "==2.15.0" },
     { name = "pyjwt", specifier = "==2.10.1" },
     { name = "pypdf", specifier = "==6.1.1" },
+    { name = "python-dotenv", specifier = "==1.2.4" },
     { name = "sqlalchemy", specifier = "==2.1.4" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.54.0" },
 ]

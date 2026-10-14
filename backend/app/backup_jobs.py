@@ -19,6 +19,7 @@ from qcloud_cos.cos_exception import CosException
 from app.backup_assets import regular_file
 from app.config import settings
 from app.errors import DomainError
+from app.ops_config import configuration
 from app.restore_check import restore_drill, restore_saved_bundle
 from app.storage import Storage
 from app.storage_transfer import CosDestination
@@ -32,6 +33,7 @@ def restricted_json(path, value):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as file:
         json.dump(value, file, ensure_ascii=False, sort_keys=True)
+        file.write("\n")
         file.flush()
         os.fsync(file.fileno())
 
@@ -274,10 +276,47 @@ def main():
     parser.add_argument("--real-cos", action="store_true", help="Explicit operator network opt-in")
     parser.add_argument("--output-directory", type=Path, default=Path("/backups"))
     parser.add_argument("--pg-bin", type=Path)
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        action="append",
+        help="Restricted environment file; repeat for separate source and backup credentials",
+    )
     args = parser.parse_args()
     if not args.real_cos:
         parser.error("--real-cos is required; real services remain pending acceptance")
     try:
+        for path in args.env_file or []:
+            values = configuration(path)
+            # 只读运维相关变量，拒绝从配置改变PYTHONPATH等执行环境。
+            allowed = {
+                "DATABASE_URL",
+                "DB_HOST",
+                "DB_PORT",
+                "DB_NAME",
+                "DB_USER",
+                "DB_PASSWORD",
+                "STORAGE_BACKEND",
+                "COS_BUCKET",
+                "COS_REGION",
+                "COS_SECRET_ID",
+                "COS_SECRET_KEY",
+                "BACKUP_SOURCE_REGION",
+                "DB_BACKUP_COS_BUCKET",
+                "DB_BACKUP_COS_REGION",
+                "DB_BACKUP_COS_SECRET_ID",
+                "DB_BACKUP_COS_SECRET_KEY",
+            }
+            os.environ.update(
+                {
+                    name: value if value is not None else ""
+                    for name, value in values.items()
+                    if name in allowed
+                }
+            )
+        if args.env_file:
+            os.environ.update(ENVIRONMENT="backup", MODEL_PROVIDER="mock")
+            settings.cache_clear()
         destination = configured_destination()
         job = daily_backup if args.mode == "daily" else weekly_restore
         print(json.dumps(job(args.output_directory, destination, args.pg_bin)))

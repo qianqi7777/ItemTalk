@@ -254,3 +254,35 @@ def test_mock_cloud_roundtrip_restores_real_pg_snapshot_without_changing_source(
             ).fetchone()[0]
             == 0
         )
+
+
+def test_explicit_backup_environment_whitelists_fields_and_clears_cache(tmp_path, monkeypatch):
+    config = {
+        "DB_HOST": "test.invalid",
+        "DB_NAME": "itemtalk_acceptance_test",
+        "DB_PASSWORD": None,
+        "DB_BACKUP_COS_BUCKET": "mock-backup-bucket",
+        "PYTHONPATH": "untrusted-config-path",
+    }
+    for name in (*config, "ENVIRONMENT", "MODEL_PROVIDER"):
+        monkeypatch.setenv(name, "before-test")
+    observed = {}
+    monkeypatch.setattr(backup_jobs, "configuration", lambda path: config)
+
+    def destination_stub():
+        import os
+
+        observed.update(
+            {name: os.environ.get(name) for name in (*config, "ENVIRONMENT", "MODEL_PROVIDER")}
+        )
+        return None
+
+    monkeypatch.setattr(backup_jobs, "configured_destination", destination_stub)
+    monkeypatch.setattr(backup_jobs, "weekly_restore", lambda *args: {"status": "mock-only"})
+    monkeypatch.setattr(
+        "sys.argv", ["backup", "weekly", "--real-cos", "--env-file", str(tmp_path / "explicit.env")]
+    )
+    backup_jobs.main()
+    assert observed["DB_NAME"] == "itemtalk_acceptance_test" and observed["DB_PASSWORD"] == ""
+    assert observed["PYTHONPATH"] == "before-test"
+    assert observed["ENVIRONMENT"] == "backup" and observed["MODEL_PROVIDER"] == "mock"

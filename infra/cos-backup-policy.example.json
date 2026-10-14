@@ -1,0 +1,43 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "name/cos:GetBucketACL",
+        "name/cos:GetBucketPolicy",
+        "name/cos:GetBucketVersioning"
+      ],
+      "resource": [
+        "qcs::cos:ap-nanjing:uid/1314964135:itemtalk-backup-1314964135/*"
+      ]
+    },
+    {
+      "effect": "allow",
+      "action": ["name/cos:GetObject"],
+      "resource": [
+        "qcs::cos:ap-nanjing:uid/1314964135:itemtalk-backup-1314964135/itemtalk/postgresql/*"
+      ]
+    },
+    {
+      "effect": "allow",
+      "action": ["name/cos:PutObject"],
+      "resource": [
+        "qcs::cos:ap-nanjing:uid/1314964135:itemtalk-backup-1314964135/itemtalk/postgresql/*"
+      ],
+      "condition": {
+        "string_equal": {
+          "cos:x-cos-acl": "private",
+          "cos:x-cos-forbid-overwrite": "true"
+        }
+      }
+    },
+    {
+      "effect": "deny",
+      "action": ["name/cos:Delete*", "name/cos:PutBucket*"],
+      "resource": [
+        "qcs::cos:ap-nanjing:uid/1314964135:itemtalk-backup-1314964135/*"
+      ]
+    }
+  ]
+}
