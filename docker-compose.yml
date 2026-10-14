@@ -248,6 +248,36 @@ services:
         condition: service_healthy
     networks:
     - itemtalk
+  backup:
+    image: ${BACKUP_IMAGE:-ghcr.io/qianqi7777/itemtalk-backup:${IMAGE_TAG:?Set fixed release tag}}
+    profiles:
+    - backup-tools
+    # 仅显式运维run使用管理员；API/Worker不会继承此服务的权限和配置。
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1001}"
+    read_only: true
+    tmpfs:
+    - /tmp
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    environment:
+      ENVIRONMENT: backup
+      MODEL_PROVIDER: mock
+      STORAGE_BACKEND: cos
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: itemtalk
+      DB_USER: itemtalk_admin
+      DB_PASSWORD: ${DB_ADMIN_PASSWORD:?Set bootstrap password}
+      COS_SECRET_ID: ${BACKUP_COS_SECRET_ID:-${COS_SECRET_ID:-}}
+      COS_SECRET_KEY: ${BACKUP_COS_SECRET_KEY:-${COS_SECRET_KEY:-}}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-ap-beijing}
+    volumes:
+    - /opt/itemtalk/backups:/backups
+    networks:
+    - itemtalk
 networks:
   itemtalk:
     driver: bridge

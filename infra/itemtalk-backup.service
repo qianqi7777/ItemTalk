@@ -1,7 +1,9 @@
 [Unit]
-Description=ItemTalk database backup
+Description=ItemTalk database and asset backup with isolated restore verification
 After=docker.service
 [Service]
 Type=oneshot
 User=ubuntu
+UMask=0077
+TimeoutStartSec=30min
 ExecStart=/bin/bash /opt/itemtalk/current/infra/backup.sh

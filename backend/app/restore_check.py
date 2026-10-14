@@ -143,13 +143,16 @@ def restore_drill(
     assets_directory=None,
     writers_paused=False,
     cos_assets=False,
+    online_immutable_assets=False,
 ):
     """使用进程环境传递凭据；工具路径由运维显式指定，不接受模型生成命令。"""
     config = settings()
+    if online_immutable_assets and (not cos_assets or writers_paused):
+        raise ValueError("Online immutable mode requires COS and cannot claim paused writers")
     if cos_assets:
         if assets_directory is not None:
             raise ValueError("Local and COS backup modes are mutually exclusive")
-        if not writers_paused:
+        if not writers_paused and not online_immutable_assets:
             raise ValueError("Paired backups require paused writers and cleanup workers")
         if config.storage_backend != "cos" or not all(
             (
@@ -229,15 +232,18 @@ def restore_drill(
                 )
             if files is not None:
                 archive_assets(assets_directory, assets_archive, files)
-        # 写入暂停是配对的一致性前提；再次核验DB和文件，拒绝演练期间的实际变化。
+        # 停写模式重验全DB；在线模式恢复的是导出快照，快照后的普通写入不纳入。
+        # 两种模式都重验原对象字节：删除/改写导致失败，不能输出缺文件的成功备份。
         if files is not None:
             with psycopg.connect(**connect_args) as stable:
                 stable.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 stable.execute("SET LOCAL row_security=off")
-                if manifest(stable) != expected or file_manifest(assets_directory) != files:
+                if (not online_immutable_assets and manifest(stable) != expected) or file_manifest(
+                    assets_directory
+                ) != files:
                     raise ValueError("Source changed during the paired backup")
                 if cos_assets and (
-                    object_keys(stable) != keys
+                    (not online_immutable_assets and object_keys(stable) != keys)
                     or snapshot_objects(object_storage, keys) != inventory
                 ):
                     raise ValueError("COS objects changed during the paired backup")
@@ -298,6 +304,9 @@ def restore_drill(
                         "formatVersion": 2 if cos_assets else 1,
                         "database": expected,
                         "assets": files,
+                        "consistencyMode": "online-immutable-cos"
+                        if online_immutable_assets
+                        else "paused-paired",
                         **({"cosCurrentObjects": inventory} if cos_assets else {}),
                     },
                     file,
@@ -315,6 +324,10 @@ def restore_drill(
                     assetRestoreTarget="local-isolated",
                     inventoriedObjects=len(inventory),
                     missingOptionalObjects=sum(value is None for value in inventory.values()),
+                    sourceWritesPaused=writers_paused,
+                    consistencyMode="online-immutable-cos"
+                    if online_immutable_assets
+                    else "paused-paired",
                 )
         descriptor = os.open(checksum_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
@@ -344,6 +357,11 @@ def main():
     parser.add_argument(
         "--writers-paused", action="store_true", help="Confirm API/Worker/other writers are paused"
     )
+    parser.add_argument(
+        "--online-immutable-assets",
+        action="store_true",
+        help="Use DB snapshot and hash-verified immutable COS objects without pausing writes",
+    )
     args = parser.parse_args()
     try:
         print(
@@ -354,6 +372,7 @@ def main():
                     args.assets_directory,
                     args.writers_paused,
                     args.cos_assets,
+                    args.online_immutable_assets,
                 ),
                 ensure_ascii=False,
             )

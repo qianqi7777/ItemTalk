@@ -76,6 +76,53 @@ def test_cos_mode_requires_explicit_pause_and_complete_exclusive_configuration(m
         restore_drill(assets_directory="unused", cos_assets=True, writers_paused=True)
     with pytest.raises(ValueError, match="COS"):
         restore_drill(cos_assets=True, writers_paused=True)
+    with pytest.raises(ValueError, match="requires COS"):
+        restore_drill(online_immutable_assets=True)
+    with pytest.raises(ValueError, match="cannot claim paused"):
+        restore_drill(cos_assets=True, writers_paused=True, online_immutable_assets=True)
+    with pytest.raises(ValueError, match="Complete COS"):
+        restore_drill(cos_assets=True, online_immutable_assets=True)
+
+
+@pytest.mark.postgres
+def test_online_cos_backup_restores_snapshot_while_source_database_changes(
+    client, tmp_path, monkeypatch
+):
+    from app import restore_check
+
+    _storage, args = install_cos_objects(client, monkeypatch)
+    with psycopg.connect(**args) as source:
+        original_name = source.execute("SELECT display_name FROM users").fetchone()[0]
+    archive = restore_check.archive_assets
+    snapshot_manifest = restore_check.manifest
+    restored_names = []
+
+    def write_after_snapshot(directory, target, expected):
+        archive(directory, target, expected)
+        with psycopg.connect(**args) as writer:
+            writer.execute("UPDATE users SET display_name=%s", ("written after snapshot",))
+
+    def inspect_restored(connection):
+        if connection.info.dbname.startswith("itemtalk_restore_"):
+            restored_names.append(
+                connection.execute("SELECT display_name FROM users").fetchone()[0]
+            )
+        return snapshot_manifest(connection)
+
+    monkeypatch.setattr(restore_check, "archive_assets", write_after_snapshot)
+    monkeypatch.setattr(restore_check, "manifest", inspect_restored)
+    result = restore_drill(
+        pg_bin(), tmp_path / "backup", cos_assets=True, online_immutable_assets=True
+    )
+    assert result["status"] == "passed" and result["sourceWritesPaused"] is False
+    assert result["consistencyMode"] == "online-immutable-cos" and restored_names == [original_name]
+    bundle = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+    assert bundle["consistencyMode"] == "online-immutable-cos"
+    with psycopg.connect(**args) as source:
+        assert (
+            source.execute("SELECT display_name FROM users").fetchone()[0]
+            == "written after snapshot"
+        )
 
 
 def install_cos_objects(client, monkeypatch):
@@ -139,12 +186,19 @@ def test_cos_registry_paired_with_real_database_restores_exact_bytes(client, tmp
 
 
 @pytest.mark.postgres
-def test_missing_confirmed_cos_object_cannot_pass_backup(client, tmp_path, monkeypatch):
+@pytest.mark.parametrize("online", [False, True])
+def test_missing_confirmed_cos_object_cannot_pass_backup(client, tmp_path, monkeypatch, online):
     storage, args = install_cos_objects(client, monkeypatch)
     confirmed = next(key for key in storage.objects if key.startswith("private/"))
     del storage.objects[confirmed]
     with pytest.raises(ValueError, match="missing"):
-        restore_drill(pg_bin(), tmp_path / "backup", writers_paused=True, cos_assets=True)
+        restore_drill(
+            pg_bin(),
+            tmp_path / "backup",
+            writers_paused=not online,
+            cos_assets=True,
+            online_immutable_assets=online,
+        )
     assert not list((tmp_path / "backup").glob("itemtalk_cos_*"))
     with psycopg.connect(**args) as source:
         assert (
@@ -156,7 +210,8 @@ def test_missing_confirmed_cos_object_cannot_pass_backup(client, tmp_path, monke
 
 
 @pytest.mark.postgres
-def test_changed_cos_bytes_abort_before_database_restore(client, tmp_path, monkeypatch):
+@pytest.mark.parametrize("online", [False, True])
+def test_changed_cos_bytes_abort_before_database_restore(client, tmp_path, monkeypatch, online):
     storage, args = install_cos_objects(client, monkeypatch)
     original = storage.read
     changed = next(iter(storage.objects))
@@ -168,7 +223,13 @@ def test_changed_cos_bytes_abort_before_database_restore(client, tmp_path, monke
 
     monkeypatch.setattr(storage, "read", read)
     with pytest.raises(ValueError, match="COS objects changed"):
-        restore_drill(pg_bin(), tmp_path / "backup", writers_paused=True, cos_assets=True)
+        restore_drill(
+            pg_bin(),
+            tmp_path / "backup",
+            writers_paused=not online,
+            cos_assets=True,
+            online_immutable_assets=online,
+        )
     assert not list((tmp_path / "backup").glob("itemtalk_cos_*"))
     with psycopg.connect(**args) as source:
         assert (

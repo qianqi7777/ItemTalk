@@ -133,4 +133,8 @@ COS 可用 `uv run python -m app.restore_check --cos-assets --writers-paused --o
 
 服务器部署、Nginx 修改和定时器安装都须先确认具体方案。代码实现和本地验证不会自动改变现有服务器。
 
-维护版本由 `Maintenance images` 工作流准备镜像：仅接受本仓库 `main` 的成功 push CI（手动运行须提供完整 SHA），源提交须包含维护打包工具且标记为 `requires-maintenance`。工作流发布并实际拉取 API、前端、数据库镜像，核对各镜像源码 SHA，生成摘要引用、目标迁移 revision 和受校验和保护的发布配置包；它没有 SSH 或服务器部署步骤。维护操作采用产物 `image-overrides.env` 中的 `API_IMAGE`、`DB_IMAGE`、`FRONTEND_IMAGE` 摘要引用，与服务器受限生产配置分别加载。产物保留 30 天，上线前须保存审核后的副本；镜像发布成功不代表 COS、备份恢复或服务器上线已通过。
+维护版本由 `Maintenance images` 工作流准备镜像：仅接受本仓库 `main` 的成功 push CI（手动运行须提供完整 SHA），源提交须包含维护打包工具且标记为 `requires-maintenance`。工作流发布并实际拉取 API、前端、数据库和独立备份镜像，核对各镜像源码 SHA，生成摘要引用、目标迁移 revision 和受校验和保护的发布配置包；它没有 SSH 或服务器部署步骤。维护操作采用产物 `image-overrides.env` 中的 `API_IMAGE`、`DB_IMAGE`、`FRONTEND_IMAGE`、`BACKUP_IMAGE` 摘要引用，与服务器受限生产配置分别加载。产物保留 30 天，上线前须保存审核后的副本；镜像发布成功不代表 COS、备份恢复或服务器上线已通过。
+
+COS 定时备份使用独立 `backup` 运维容器，包含 PostgreSQL 16 客户端、管理员数据库连接、只读根文件系统和专用备份目录，不向 API/Worker 传递管理员权限，也不调用模型。经确认安装后的 `infra/backup.sh` 自动选择此模式并实际恢复到临时库/本地目录核验；通过共享部署锁和独占备份锁防止维护或备份重叠。它使用数据库导出快照和已确认对象哈希，不暂停应用写入；快照之后的数据不在恢复点内，对象缺失或变化导致非零退出。此报告标记 `online-immutable-cos`，不能代替迁移前的停写备份。
+
+运行前须为 `/opt/itemtalk/backups` 准备与 `BACKUP_UID/BACKUP_GID` 一致的受限所有权，确认 DB 已运行并预留恢复临时空间。可配置专用只读 COS 凭据 `BACKUP_COS_SECRET_ID/KEY`；未提供时使用现有 COS 凭据。该容器只执行对象读取，不改 COS 配置或删除对象。定时器的失败必须接入运维告警，成功/失败备份不会自动删除；保留和异地副本策略仍需维护方案确认。

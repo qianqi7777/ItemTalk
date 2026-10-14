@@ -51,6 +51,7 @@ jobs:
         set -euo pipefail
         if [[ $(cat infra/schema-compatibility.txt) == requires-maintenance ]]; then
           test -f infra/release_manifest.py || { echo 'Candidate lacks maintenance packaging tools'; exit 2; }
+          test -f backend/Dockerfile.backup-tools || { echo 'Candidate lacks isolated backup tooling'; exit 2; }
           echo 'publishable=true' >> "$GITHUB_OUTPUT"
         else
           echo 'publishable=false' >> "$GITHUB_OUTPUT"
@@ -111,6 +112,20 @@ jobs:
         build-args: |
           VITE_BASE_PATH=/itemtalk/
           VITE_API_BASE_URL=/itemtalk/api/v1
+    - name: Publish isolated backup tooling
+      id: backup
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        file: ./backend/Dockerfile.backup-tools
+        platforms: linux/amd64
+        push: true
+        tags: ghcr.io/qianqi7777/itemtalk-backup:sha-${{ needs.validate.outputs.sha }}
+        build-args: |
+          API_IMAGE=ghcr.io/qianqi7777/itemtalk-api@${{ steps.api.outputs.digest }}
+        labels: |
+          org.opencontainers.image.revision=${{ needs.validate.outputs.sha }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
     - name: Verify published bytes and create release record
       env:
         RELEASE_SHA: ${{ needs.validate.outputs.sha }}
@@ -118,10 +133,11 @@ jobs:
         API_DIGEST: ${{ steps.api.outputs.digest }}
         DB_DIGEST: ${{ steps.db.outputs.digest }}
         FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+        BACKUP_DIGEST: ${{ steps.backup.outputs.digest }}
       run: |
         set -euo pipefail
         # 使用摘要实际拉取并核对镜像自身的源码SHA，不以标签存在代替验证。
-        for kind in api db frontend; do
+        for kind in api db frontend backup; do
           name="${kind^^}_DIGEST"
           digest="${!name}"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Image digest missing'; exit 2; }
@@ -130,6 +146,9 @@ jobs:
           actual=$(docker image inspect "$reference" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
           [[ "$actual" == "$RELEASE_SHA" ]] || { echo 'Image revision mismatch'; exit 2; }
         done
+        docker run --rm --entrypoint /usr/lib/postgresql/16/bin/pg_dump "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" --version | grep -E '^pg_dump \(PostgreSQL\) 16\.'
+        docker run --rm --entrypoint /usr/lib/postgresql/16/bin/pg_restore "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" --version | grep -E '^pg_restore \(PostgreSQL\) 16\.'
+        docker run --rm --user 1000:1001 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python "ghcr.io/qianqi7777/itemtalk-backup@$BACKUP_DIGEST" -m app.restore_check --help >/dev/null
         # heads是离线迁移元数据命令；不连接数据库或加载生产环境配置。
         head=$(docker run --rm --entrypoint python "ghcr.io/qianqi7777/itemtalk-api@$API_DIGEST" -m alembic heads)
         [[ $(printf '%s\n' "$head" | wc -l) == 1 ]] || { echo 'Single migration head required'; exit 2; }

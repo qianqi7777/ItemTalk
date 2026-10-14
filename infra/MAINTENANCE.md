@@ -11,7 +11,7 @@
 - 独立管理员、迁移、API、Worker 角色和新配置准备就绪；只有变量名可写入操作记录。API/Worker 无所有权、超级用户或 BYPASSRLS；不得沿用旧应用管理员连接。
 - 用户明确确认停写窗口、恢复点以及可接受的失败/回滚时间。
 
-`Maintenance images` 只接受本仓库 main 的成功 push CI，手动指定也核对同一完整 SHA 的成功 CI。核验三个摘要镜像可拉取且 OCI revision 等于目标 SHA 后，保存 `release.json`、`image-overrides.env`、`release-config.tar` 及 `release.sha256`；归档只取该提交跟踪的 Compose、SQL、infra，不夹带本地设计文档或生产配置。目标 revision 来自镜像内离线 `alembic heads`，不是当前生产 revision。
+`Maintenance images` 只接受本仓库 main 的成功 push CI，手动指定也核对同一完整 SHA 的成功 CI。核验 API、前端、数据库及备份四个摘要镜像可拉取且 OCI revision 等于目标 SHA 后，保存 `release.json`、`image-overrides.env`、`release-config.tar` 及 `release.sha256`；归档只取该提交跟踪的 Compose、SQL、infra，不夹带本地设计文档或生产配置。备份镜像基于同次 API 摘要，额外安装 PostgreSQL 16 客户端并检查其版本及受限 UID 的离线入口。目标 revision 来自镜像内离线 `alembic heads`，不是当前生产 revision。
 
 执行前下载并核对全部校验和，复核 JSON 中的 SHA、CI、revision 与镜像摘要。将审核后的 `image-overrides.env` 保存为本次发布目录的 `.env.image_tag`，继续分开加载服务器受限生产配置。Compose 的 API/Worker/migration 使用同一个 `API_IMAGE`，DB/前端分别用对应摘要；未提供摘要时保留旧 SHA 标签启动方式。摘要记录不会随标签重建而改变，维护操作不得以运行旧 `deploy.sh` 来替代停写/配对恢复流程。
 
@@ -24,6 +24,10 @@
 5. 仅在明确的备份恢复点已验证后继续；失败保持维护状态，原数据库、文件和配置不改动。
 
 源存储为 COS 时，使用 `app.restore_check --cos-assets --writers-paused` 的数据库对象清单配对归档；其恢复目标是隔离本地目录及新数据库，须另用独立目标桶验证归档回写、同键字节和新适配器读取。命令只备份数据库登记的当前对象，不备份版本历史或扫描其他项目对象；未登记孤儿对象由独立清理/生命周期策略处理。不能用原 `backup.sh` 的本地目录 tar 代替 COS 对象备份，也不能把本地恢复报告当作目标桶恢复证明。
+
+日常 COS 备份容器可使用 `--cos-assets --online-immutable-assets`，允许源库正常写入，恢复的是导出快照；已确认对象须逐一匹配该快照的大小和哈希，二次对象读取发现删除/改写则失败。它不声称停写，不保证快照后的写入或桶版本历史已备份，不能替代本次维护停写的旧配置/角色/数据库/资产恢复点。每次输出仅包含受控统计，保留受限 dump、归档、清单及校验和。
+
+安装备份 timer 前，核对运维 UID/GID 与 `/opt/itemtalk/backups` 的受限所有权，先在预留容量内运行一次恢复核验；该操作会创建/删除本次临时库并写入备份，仍须确认。脚本不启动/暂停数据库、API或Worker，使用 `--no-deps` 的独立备份容器；管理员密码只在此容器的环境内，备份 COS 凭据可另用只读账号。确认失败告警、保留期限与异地副本方案后才启用 timer，不自行清理旧备份。
 
 ## 权限迁移与本地资产转 COS
 

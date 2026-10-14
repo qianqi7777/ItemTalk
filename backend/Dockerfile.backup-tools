@@ -1,0 +1,15 @@
+ARG API_IMAGE
+FROM ${API_IMAGE}
+USER root
+# 独立备份工具与生产PG16匹配；客户端来自签名校验的官方PGDG源。
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl --fail --silent --show-error --location https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && . /etc/os-release \
+    && printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$VERSION_CODENAME" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-16 \
+    && rm -rf /var/lib/apt/lists/*
+USER itemtalk
+ENTRYPOINT ["python", "-m", "app.restore_check"]
+CMD ["--cos-assets", "--online-immutable-assets", "--pg-bin", "/usr/lib/postgresql/16/bin", "--output-directory", "/backups"]

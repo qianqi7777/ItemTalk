@@ -3,14 +3,32 @@
 set -euo pipefail
 umask 077
 base=/opt/itemtalk
+# 部署持有独占锁；定时备份共享部署锁，且不允许自身并行启动。
+exec 9>"$base/.deploy.lock"
+flock -s -n 9 || { echo 'Deployment active; backup not started'; exit 1; }
+exec 8>"$base/.backup.lock"
+flock -n 8 || { echo 'Backup already running'; exit 1; }
 release=$(readlink -f "$base/current")
 [[ -f $release/.env.image_tag ]] || { echo 'No active release'; exit 1; }
-# 本脚本的tar仅覆盖本地文件；COS不能以空本地目录归档冒充对象备份。
-if ! docker compose --project-name itemtalk --env-file "$base/.env.production" \
-  --env-file "$release/.env.image_tag" -f "$release/docker-compose.yml" \
-  exec -T api python -c 'from app.config import settings; import sys; sys.exit(0 if settings().storage_backend == "local" else 2)'; then
-  echo 'Local-only backup unavailable; use the approved COS paired backup procedure'
-  exit 1
+compose() {
+  docker compose --project-name itemtalk --env-file "$base/.env.production" \
+    --env-file "$release/.env.image_tag" -f "$release/docker-compose.yml" "$@"
+}
+storage=$(compose exec -T api python - <<'PY'
+from app.config import settings
+try:
+    backend = settings().storage_backend
+    if backend not in {"local", "cos"}:
+        raise ValueError
+    print(backend)
+except Exception:
+    raise SystemExit("Backup configuration unavailable; details suppressed") from None
+PY
+)
+if [[ $storage == cos ]]; then
+  # 只启动独立运维容器；不自动启动、重建或暂停DB/API/Worker。
+  compose --profile backup-tools run --rm --no-deps backup
+  exit 0
 fi
 mkdir -p "$base/backups"
 target=$base/backups/daily-$(date -u +%Y%m%dT%H%M%SZ).dump

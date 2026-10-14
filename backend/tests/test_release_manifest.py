@@ -17,10 +17,11 @@ DIGESTS = {
     "api": "sha256:" + "b" * 64,
     "db": "sha256:" + "c" * 64,
     "frontend": "sha256:" + "d" * 64,
+    "backup": "sha256:" + "e" * 64,
 }
 
 
-def test_release_record_binds_three_images_to_verified_commit():
+def test_release_record_binds_all_images_to_verified_commit():
     record = release_record(SHA, "123", "0009_personal_manuals", DIGESTS)
     assert record["commitSha"] == SHA and record["ciRunId"] == 123
     assert record["compatibility"] == "requires-maintenance"
@@ -104,7 +105,8 @@ def test_real_compose_uses_matching_api_worker_migration_images(tmp_path, by_dig
     child_environment = {
         name: value
         for name, value in os.environ.items()
-        if name not in values and name not in {"API_IMAGE", "DB_IMAGE", "FRONTEND_IMAGE"}
+        if name not in values
+        and name not in {"API_IMAGE", "DB_IMAGE", "FRONTEND_IMAGE", "BACKUP_IMAGE"}
     }
     result = subprocess.run(  # noqa: S603
         [
@@ -113,6 +115,8 @@ def test_real_compose_uses_matching_api_worker_migration_images(tmp_path, by_dig
             str(environment),
             "--profile",
             "maintenance",
+            "--profile",
+            "backup-tools",
             "-f",
             str(ROOT / "docker-compose.yml"),
             "config",
@@ -133,3 +137,12 @@ def test_real_compose_uses_matching_api_worker_migration_images(tmp_path, by_dig
         assert services[service]["environment"]["BUILD_VERSION"] == SHA
     assert services["db"]["image"] == record["images"]["db"][field]
     assert services["caddy"]["image"] == record["images"]["frontend"][field]
+    backup = services["backup"]
+    assert backup["image"] == record["images"]["backup"][field]
+    assert backup["environment"]["DB_USER"] == "itemtalk_admin"
+    assert services["api"]["environment"]["DB_USER"] == "itemtalk_app"
+    assert services["worker"]["environment"]["DB_USER"] == "itemtalk_worker"
+    assert backup["environment"]["MODEL_PROVIDER"] == "mock"
+    assert backup["user"] == "1000:1001" and backup["read_only"]
+    assert not backup.get("ports") and backup["profiles"] == ["backup-tools"]
+    assert [v["target"] for v in backup["volumes"]] == ["/backups"]

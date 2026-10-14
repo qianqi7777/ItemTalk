@@ -10,6 +10,7 @@ IMAGES = {
     "api": "ghcr.io/qianqi7777/itemtalk-api",
     "frontend": "ghcr.io/qianqi7777/itemtalk-frontend",
     "db": "ghcr.io/qianqi7777/itemtalk-db",
+    "backup": "ghcr.io/qianqi7777/itemtalk-backup",
 }
 
 
@@ -23,7 +24,7 @@ def release_record(sha, ci_run, revision, digests):
     if set(digests) != set(IMAGES) or any(
         not re.fullmatch(r"sha256:[a-f0-9]{64}", value) for value in digests.values()
     ):
-        raise ValueError("All three verified image digests required")
+        raise ValueError("All required image digests required")
     # 部署按摘要选择字节；sha标签只用于查找，重新构建同一提交也不能改变这份记录。
     return {
         "formatVersion": 1,
