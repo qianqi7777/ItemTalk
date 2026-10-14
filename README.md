@@ -138,3 +138,5 @@ COS 可用 `uv run python -m app.restore_check --cos-assets --writers-paused --o
 COS 定时备份使用独立 `backup` 运维容器，包含 PostgreSQL 16 客户端、管理员数据库连接、只读根文件系统和专用备份目录，不向 API/Worker 传递管理员权限，也不调用模型。经确认安装后的 `infra/backup.sh` 自动选择此模式并实际恢复到临时库/本地目录核验；通过共享部署锁和独占备份锁防止维护或备份重叠。它使用数据库导出快照和已确认对象哈希，不暂停应用写入；快照之后的数据不在恢复点内，对象缺失或变化导致非零退出。此报告标记 `online-immutable-cos`，不能代替迁移前的停写备份。
 
 运行前须为 `/opt/itemtalk/backups` 准备与 `BACKUP_UID/BACKUP_GID` 一致的受限所有权，确认 DB 已运行并预留恢复临时空间。可配置专用只读 COS 凭据 `BACKUP_COS_SECRET_ID/KEY`；未提供时使用现有 COS 凭据。该容器只执行对象读取，不改 COS 配置或删除对象。定时器的失败必须接入运维告警，成功/失败备份不会自动删除；保留和异地副本策略仍需维护方案确认。
+
+真实 COS 供应商预检可在本地 `backend` 运行 `uv run python -m app.cos_probe --real-cos --origin https://49.233.65.195 --report ../.cache/cos-probe-<本轮唯一标识>.json`。需先在本地 `.env` 填入 COS 四个变量，报告独占创建；该命令只为本轮新建合成图片对象，核对私有桶、前端 Origin 的 PUT/GET 与 Content-Type CORS、签名上传/读取、临时键覆盖不影响私有副本，以及本地归档恢复字节到 COS。清理前核对对象 nonce，不删归属不符的对象；强制退出或清理失败须依据受限报告人工核对残留。程序无数据库/模型调用，SDK和HTTP响应不输出到日志、响应限4KiB、15秒超时且无自动重试；报告只能证明供应商协议，应用权限和数据库配对恢复另需验收。

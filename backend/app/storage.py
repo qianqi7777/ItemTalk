@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -14,13 +15,16 @@ from app.errors import DomainError
 from app.security import token_for
 
 Image.MAX_IMAGE_PIXELS = 20_000_000
+# SDK在网络异常时先logger.exception(url)，再抛出异常；仅脱敏DomainError还不够。
+# 应用保留自己的受控错误码，不允许原SDK请求/响应诊断进入日志。
+logging.getLogger("qcloud_cos.cos_client").disabled = True
 
 
 class Storage:
     """业务存储适配器；COS 原始异常不得越过服务层响应或任务记录边界。"""
 
-    def __init__(self):
-        self.config = settings()
+    def __init__(self, config=None, *, cos_retries=3, cos_timeout=None):
+        self.config = settings() if config is None else config
         self.client = None
         if self.config.storage_backend == "cos":
             from qcloud_cos import CosConfig, CosS3Client
@@ -31,7 +35,9 @@ class Storage:
                     SecretId=self.config.cos_secret_id.get_secret_value(),
                     SecretKey=self.config.cos_secret_key.get_secret_value(),
                     Scheme="https",
-                )
+                    Timeout=cos_timeout,
+                ),
+                retry=cos_retries,
             )
 
     def path(self, key):
@@ -41,7 +47,7 @@ class Storage:
             raise ValueError("Invalid object key")
         return path
 
-    def url(self, asset, write=False):
+    def url(self, asset, write=False, headers=None):
         now = datetime.now(UTC)
         ttl = 900
         if write and asset["expires_at"]:
@@ -57,6 +63,7 @@ class Storage:
                 Key=asset["object_key"],
                 Method="PUT" if write else "GET",
                 Expired=ttl,
+                Headers={} if headers is None else headers,
             )
         else:
             action = "upload" if write else "read"

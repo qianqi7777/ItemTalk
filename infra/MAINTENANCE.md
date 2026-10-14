@@ -11,6 +11,8 @@
 - 独立管理员、迁移、API、Worker 角色和新配置准备就绪；只有变量名可写入操作记录。API/Worker 无所有权、超级用户或 BYPASSRLS；不得沿用旧应用管理员连接。
 - 用户明确确认停写窗口、恢复点以及可接受的失败/回滚时间。
 
+COS 可先使用 `app.cos_probe --real-cos --origin https://49.233.65.195 --report <本轮新报告>` 验证供应商协议。它仅创建本轮带 nonce 的合成对象，检查 CORS/签名/私有读/不可变副本/归档字节回写并清理已核对归属的候选，不修改桶权限/策略/版本/CORS，不访问数据库或模型。成功不代替真实应用上传确认、越权、任务清理及完整配对恢复证据；报告cleanupIncomplete或running不能满足门禁。
+
 `Maintenance images` 只接受本仓库 main 的成功 push CI，手动指定也核对同一完整 SHA 的成功 CI。核验 API、前端、数据库及备份四个摘要镜像可拉取且 OCI revision 等于目标 SHA 后，保存 `release.json`、`image-overrides.env`、`release-config.tar` 及 `release.sha256`；归档只取该提交跟踪的 Compose、SQL、infra，不夹带本地设计文档或生产配置。备份镜像基于同次 API 摘要，额外安装 PostgreSQL 16 客户端并检查其版本及受限 UID 的离线入口。目标 revision 来自镜像内离线 `alembic heads`，不是当前生产 revision。
 
 执行前下载并核对全部校验和，复核 JSON 中的 SHA、CI、revision 与镜像摘要。将审核后的 `image-overrides.env` 保存为本次发布目录的 `.env.image_tag`，继续分开加载服务器受限生产配置。Compose 的 API/Worker/migration 使用同一个 `API_IMAGE`，DB/前端分别用对应摘要；未提供摘要时保留旧 SHA 标签启动方式。摘要记录不会随标签重建而改变，维护操作不得以运行旧 `deploy.sh` 来替代停写/配对恢复流程。
