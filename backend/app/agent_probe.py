@@ -66,6 +66,8 @@ class GatewayChatModel(BaseChatModel):
     model_name: str = "itemtalk:restricted"
     budget_subject: str = "agent-probe"
     bound_tools: list[Any] = []
+    require_evidence: bool = False
+    json_output: bool = False
 
     @property
     def _llm_type(self):
@@ -112,6 +114,15 @@ class GatewayChatModel(BaseChatModel):
             "max_tokens": 1000,
             "tools": [convert_to_openai_tool(entry) for entry in self.bound_tools],
         }
+        if self.require_evidence and not any(
+            isinstance(message, ToolMessage) for message in messages
+        ):
+            if not any(tool["function"]["name"] == "read_evidence" for tool in payload["tools"]):
+                raise DomainError(502, "UPSTREAM_MODEL_ERROR", "受限证据工具不可用")
+            # 提示词不能保证模型真的检索；首轮必须走唯一允许的证据工具，防止凭空计划。
+            payload["tool_choice"] = {"type": "function", "function": {"name": "read_evidence"}}
+        elif self.json_output:
+            payload["response_format"] = {"type": "json_object"}
         if settings().model_provider == "dashscope":
             payload["enable_thinking"] = False
         result = gateway.request("chat", "/chat/completions", payload)["choices"][0]["message"]

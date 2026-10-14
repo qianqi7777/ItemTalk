@@ -1,6 +1,7 @@
 """引导 Agent 与持久化等待节点，全部检查点参与调用者的业务事务。"""
 
 import json
+import re
 from threading import Lock
 from typing import TypedDict
 
@@ -24,8 +25,28 @@ from app.services.chat import retrieve
 from app.services.products import owned
 
 
+def parse_plan(content):
+    """仅兼容完整单个JSON代码围栏，仍以严格schema检查全部正文，不截取任意JSON。"""
+    if not isinstance(content, str) or len(content) > 20000:
+        raise ValueError("Invalid structured plan content")
+    body = content.strip()
+    if body.startswith("```"):
+        # 实测百炼在tools模式仍可能忽略response_format并加围栏；仅处理这一
+        # 协议外壳。多段、前后说明、其他语言或未知字段不能借此进入业务状态。
+        match = re.fullmatch(
+            r"```json[ \t]*\r?\n(.*)\r?\n```", body, flags=re.DOTALL | re.IGNORECASE
+        )
+        if not match:
+            raise ValueError("Invalid JSON code envelope")
+        body = match[1]
+    return GuidancePlan.model_validate_json(body)
+
+
 class GuidanceChatModel(GatewayChatModel):
     """生产走国内网关；演示响应只用于明确mock环境的状态机回归。"""
+
+    require_evidence: bool = True
+    json_output: bool = True
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         if settings().model_provider != "mock":
@@ -168,7 +189,7 @@ def plan(connection, session, mode="create", note=None, current=None, observatio
         durability="sync",
     )
     try:
-        output = GuidancePlan.model_validate_json(result["messages"][-1].content)
+        output = parse_plan(result["messages"][-1].content)
     except (TypeError, ValueError):
         raise DomainError(502, "UPSTREAM_MODEL_ERROR", "引导步骤格式无效，请稍后重试") from None
     return output, chunks
