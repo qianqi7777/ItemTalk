@@ -141,7 +141,9 @@ def main():
                 "configurable": {"thread_id": f"probe:{args.user_id}:{args.instance_id}"},
                 "recursion_limit": 8,
             }
-            with saver() as checkpointer:
+            from app.db import actor
+
+            with actor(args.user_id), saver() as checkpointer:
                 agent = restricted_agent(checkpointer, args.user_id, args.instance_id)
                 first = agent.invoke(
                     {

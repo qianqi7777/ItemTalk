@@ -4,10 +4,15 @@ services:
     environment:
       POSTGRES_DB: itemtalk
       POSTGRES_USER: itemtalk
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-devpassword}
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:-devpassword}
+      APP_DB_PASSWORD: ${DB_PASSWORD:-devpassword}
+      MIGRATION_DB_PASSWORD: ${DB_MIGRATION_PASSWORD:-devpassword}
+      WORKER_DB_PASSWORD: ${DB_WORKER_PASSWORD:-devpassword}
     volumes:
     - pgdata:/var/lib/postgresql/data
     - ./init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+    - ./infra/init-roles.sh:/docker-entrypoint-initdb.d/02-roles.sh:ro
+    - ./infra/runtime-roles.sql:/docker-entrypoint-initdb.d/runtime-roles.sql:ro
     ports:
     - 127.0.0.1:5432:5432
     healthcheck:
@@ -49,7 +54,7 @@ services:
       DB_HOST: db
       DB_PORT: '5432'
       DB_NAME: itemtalk
-      DB_USER: itemtalk
+      DB_USER: itemtalk_app
       DB_PASSWORD: ${DB_PASSWORD:-devpassword}
       JWT_SECRET: ${JWT_SECRET:-development-only-secret}
       AUTH_COOKIE_SECURE: 'false'
@@ -117,8 +122,8 @@ services:
       DB_HOST: db
       DB_PORT: '5432'
       DB_NAME: itemtalk
-      DB_USER: itemtalk
-      DB_PASSWORD: ${DB_PASSWORD:-devpassword}
+      DB_USER: itemtalk_worker
+      DB_PASSWORD: ${DB_WORKER_PASSWORD:-devpassword}
       JWT_SECRET: ${JWT_SECRET:-development-only-secret}
       AUTH_COOKIE_SECURE: 'false'
       AUTH_COOKIE_PATH: /
@@ -183,8 +188,8 @@ services:
       DB_HOST: db
       DB_PORT: '5432'
       DB_NAME: itemtalk
-      DB_USER: itemtalk
-      DB_PASSWORD: ${DB_PASSWORD:-devpassword}
+      DB_USER: itemtalk_migrator
+      DB_PASSWORD: ${DB_MIGRATION_PASSWORD:-devpassword}
       JWT_SECRET: ${JWT_SECRET:-development-only-secret}
       AUTH_COOKIE_SECURE: 'false'
       AUTH_COOKIE_PATH: /

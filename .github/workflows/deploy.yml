@@ -27,6 +27,7 @@ jobs:
       == github.repository)
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
+      deployable: ${{ steps.compatibility.outputs.deployable }}
     steps:
     - name: Verify commit CI
       id: commit
@@ -39,8 +40,21 @@ jobs:
         [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Full SHA required'; exit 2; }
         gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f head_sha="$sha" -f branch=main -f event=push --jq '.workflow_runs | any(.conclusion == "success")' | grep -qx true
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.commit.outputs.sha }}
+    - name: Check migration compatibility before publishing or contacting the server
+      id: compatibility
+      run: |
+        if [[ $(cat infra/schema-compatibility.txt) == expand-only ]]; then
+          echo 'deployable=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'deployable=false' >> "$GITHUB_OUTPUT"
+          echo 'This release requires an approved maintenance migration; automatic deployment skipped.' >> "$GITHUB_STEP_SUMMARY"
+        fi
   build-and-push:
     needs: validate
+    if: needs.validate.outputs.deployable == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

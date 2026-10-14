@@ -5,6 +5,7 @@
 """
 
 import json
+from contextlib import contextmanager
 from typing import Any
 from uuid import UUID
 
@@ -22,7 +23,7 @@ from sqlalchemy.engine import make_url
 
 from app.adapters import ModelGateway
 from app.config import settings
-from app.db import transaction
+from app.db import actor_id, transaction
 from app.errors import DomainError
 from app.services.chat import retrieve
 from app.services.products import owned
@@ -170,5 +171,11 @@ def restricted_agent(checkpointer, user_id: UUID, instance_id: UUID):
     )
 
 
+@contextmanager
 def saver():
-    return PostgresSaver.from_conn_string(checkpoint_conninfo())
+    # CLI 探针连接为独立 autocommit 连接，显式绑定同一身份；关闭连接后不复用。
+    with PostgresSaver.from_conn_string(checkpoint_conninfo()) as checkpointer:
+        checkpointer.conn.execute(
+            "SELECT set_config('itemtalk.user_id',%s,false)", (str(actor_id.get() or ""),)
+        )
+        yield checkpointer

@@ -103,7 +103,9 @@ uv run python -m app.cli register-source --brand <品牌> --url <官方资料链
 
 向 `main` 提交代码后，CI 全部通过才会构建和推送对应 SHA 的镜像，再通过 SSH 发布到服务器。仓库变量为 `DEPLOY_HOST`、`DEPLOY_USER`，Secrets 为 `DEPLOY_SSH_PRIVATE_KEY`、`DEPLOY_KNOWN_HOSTS`；供应商密钥只保存在服务器 `.env.production`。GHCR 拉取使用本次 Actions 的临时 Token，发布结束后注销。
 
-生产需要受限的 `.env.production`、独立应用/迁移数据库角色、固定 SSH host key、只读 GHCR 凭据，以及已验证的备份恢复点。不得在终端输出完整 Compose 配置或把生产环境文件放入仓库。
+生产需要受限的 `.env.production`、独立 API/Worker/迁移数据库角色、固定 SSH host key、只读 GHCR 凭据，以及已验证的备份恢复点。API 使用 `itemtalk_app`，Worker 使用 `itemtalk_worker` 和独立 `DB_WORKER_PASSWORD`；运行账号无表所有权、超级用户或 BYPASSRLS 权限。私有表强制 RLS，事务内绑定已验证用户，Worker 通过受限队列函数领取任务后绑定任务所有者。不得在终端输出完整 Compose 配置或把生产环境文件放入仓库。
+
+0007 启用 RLS 会改变旧应用的认证和数据库权限，当前发布标记为 `requires-maintenance`。CI 可以正常测试；Deploy 在构建发布镜像和连接服务器之前跳过自动部署。已有服务器须在确认的维护窗口中暂停 API/Worker、保存数据库与文件配对备份、用管理员预置 `infra/runtime-roles.sql` 中的角色，再应用迁移并验证新服务；旧应用回滚需配对恢复备份，不能只切换镜像。新建开发数据库由 Compose 初始化角色；已有开发数据库也须先预置角色。
 
 部署工作流仅构建成功 main CI 对应的完整 SHA，发布脚本使用固定 `sha-<SHA>` 镜像，保存迁移 revision、镜像摘要和发布前备份。健康/版本检查成功后切换 `current`；失败恢复上一发布应用，不自动降级数据库。首次部署失败则停止新应用，并撤销新 Nginx 路由。
 
@@ -111,6 +113,6 @@ uv run python -m app.cli register-source --brand <品牌> --url <官方资料链
 
 试用版备份同时保存数据库 dump、持久化上传文件归档及校验和。维护窗口内运行备份可避免并发清理影响数据库与文件的一致性；恢复时应配对还原这些文件。
 
-可在拥有建库权限的隔离环境运行 `uv run python -m app.restore_check`。命令使用一致性快照导出，在本次新建的 `itemtalk_restore_*` 数据库中恢复，核对所有表的 SHA-256 内容摘要、扩展和约束后清理临时库，并保留受限备份及校验文件。Windows 可通过 `--pg-bin <PostgreSQL bin 目录>` 指定客户端。生产执行同样属于需要确认的服务器变更，演练必须在预留容量内进行。
+可在拥有建库及恢复对象所有权权限的隔离环境运行 `uv run python -m app.restore_check`。命令使用一致性快照导出，在本次新建的 `itemtalk_restore_*` 数据库中恢复，核对所有表的 SHA-256 内容摘要、扩展、约束、RLS 策略、对象所有权和守卫函数执行权限后清理临时库，并保留受限备份及校验文件。恢复环境须预置同名数据库角色；导出保留 owner 和 ACL，避免恢复后丢失安全边界。Windows 可通过 `--pg-bin <PostgreSQL bin 目录>` 指定客户端。生产执行同样属于需要确认的服务器变更，演练必须在预留容量内进行。
 
 服务器部署、Nginx 修改和定时器安装都须先确认具体方案。代码实现和本地验证不会自动改变现有服务器。

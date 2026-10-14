@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.db import execute, json_value, many, one, transaction
+from app.db import actor, execute, json_value, many, one, transaction, validate_runtime
 from app.errors import DomainError, missing
 from app.schemas import (
     ConfirmRequest,
@@ -43,7 +44,15 @@ from app.services.transcription import transcribe_asset
 from app.speech import asr_enabled
 from app.storage import Storage
 
-app = FastAPI(title="ItemTalk API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app):
+    if settings().environment in {"production", "staging"}:
+        validate_runtime("app")
+    yield
+
+
+app = FastAPI(title="ItemTalk API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger(__name__)
 HEARTBEAT_SQL = "UPDATE assistant_runs SET heartbeat_at=now() WHERE id=:id AND status='running'"
 
@@ -78,7 +87,7 @@ async def guard_writes(request, call_next):
             client = request.client.host if request.client else "unknown"
             subject = f"http:{client}"
             cookie = request.cookies.get("itemtalk_auth")
-            if cookie and not request.url.path.startswith("/api/v1/auth/"):
+            if cookie and request.url.path not in {"/api/v1/auth/login", "/api/v1/auth/register"}:
                 subject = f"http-user:{decode_token(cookie)['sub']}"
             with transaction() as connection:
                 consume(
@@ -87,7 +96,20 @@ async def guard_writes(request, call_next):
                     datetime.now(UTC).strftime("%Y-%m-%dT%H:%M"),
                     settings().rate_limit_per_minute,
                 )
-        return await call_next(request)
+        # 中间件上下文会复制到同步路由线程及 SSE 子任务；依赖线程里设置 ContextVar
+        # 不能传播回路由，因此必须在进入路由之前绑定已验证的身份。
+        cookie = request.cookies.get("itemtalk_auth")
+        identity = None
+        if cookie and request.url.path not in {"/api/v1/auth/login", "/api/v1/auth/register"}:
+            identity = decode_token(cookie)["sub"]
+        if request.url.path.endswith("/content"):
+            purpose = "upload" if request.method == "PUT" else "read"
+            claims = decode_token(request.query_params.get("token", ""), purpose)
+            identity = claims.get("owner")
+            if not identity:
+                raise DomainError(401, "AUTH_REQUIRED", "上传或读取链接已失效，请重新获取")
+        with actor(identity):
+            return await call_next(request)
     except DomainError as error:
         return JSONResponse(error.body(), status_code=error.status)
     except Exception as error:
@@ -150,11 +172,7 @@ def register(body: Credentials):
     with transaction() as connection:
         row = one(
             connection,
-            (
-                "INSERT INTO users(login,login_normalized,hashed_password) VALUES "
-                "(:email,:normalized,:password) ON CONFLICT(login_normalized) DO "
-                "NOTHING RETURNING *"
-            ),
+            ("SELECT * FROM itemtalk_register(:email,:normalized,:password)"),
             email=body.email,
             normalized=normalize(body.email),
             password=password_hasher.hash(body.password),
@@ -169,10 +187,7 @@ def login(body: Credentials, response: Response):
     with transaction() as connection:
         row = one(
             connection,
-            (
-                "SELECT * FROM users WHERE login_normalized=:email AND "
-                "status='active' AND deleted_at IS NULL"
-            ),
+            ("SELECT * FROM itemtalk_login(:email)"),
             email=normalize(body.email),
         )
     if not row or not verify_password(row["hashed_password"], body.password):

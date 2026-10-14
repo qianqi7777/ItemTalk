@@ -60,10 +60,12 @@ jobs:
       run: |
         PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
         PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+        PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -v ON_ERROR_STOP=1 -f infra/runtime-roles.sql
+        PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "ALTER ROLE itemtalk_migrator LOGIN PASSWORD 'test'; ALTER ROLE itemtalk_app LOGIN PASSWORD 'test'; ALTER ROLE itemtalk_worker LOGIN PASSWORD 'test';"
     - name: Run migrations
       working-directory: backend
       env:
-        DATABASE_URL: postgresql+psycopg://itemtalk:test@localhost:5432/itemtalk_test
+        DATABASE_URL: postgresql+psycopg://itemtalk_migrator:test@localhost:5432/itemtalk_test
         DB_HOST: localhost
         DB_NAME: itemtalk_test
         DB_USER: itemtalk
@@ -141,13 +143,15 @@ jobs:
       working-directory: backend
       run: |
         uv sync --locked
-        uv run alembic upgrade head
+        PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_e2e -v ON_ERROR_STOP=1 -f ../infra/runtime-roles.sql
+        PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_e2e -c "ALTER ROLE itemtalk_migrator LOGIN PASSWORD 'test'; ALTER ROLE itemtalk_app LOGIN PASSWORD 'test'; ALTER ROLE itemtalk_worker LOGIN PASSWORD 'test'; CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+        DATABASE_URL=postgresql+psycopg://itemtalk_migrator:test@localhost:5432/itemtalk_e2e uv run alembic upgrade head
     - name: Start API and worker
       working-directory: backend
       run: |
-        setsid uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/itemtalk-api.log 2>&1 &
+        DATABASE_URL=postgresql+psycopg://itemtalk_app:test@localhost:5432/itemtalk_e2e setsid uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/itemtalk-api.log 2>&1 &
         echo "$!" > /tmp/itemtalk-api.pid
-        setsid uv run python -m app.worker > /tmp/itemtalk-worker.log 2>&1 &
+        DATABASE_URL=postgresql+psycopg://itemtalk_worker:test@localhost:5432/itemtalk_e2e setsid uv run python -m app.worker > /tmp/itemtalk-worker.log 2>&1 &
         echo "$!" > /tmp/itemtalk-worker.pid
         for attempt in {1..30}; do
           if curl --fail --silent http://127.0.0.1:8000/api/v1/health >/dev/null; then exit 0; fi

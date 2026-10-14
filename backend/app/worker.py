@@ -6,7 +6,7 @@ import time
 
 from app.adapters import ModelGateway
 from app.config import settings
-from app.db import execute, json_value, many, one, transaction
+from app.db import actor, execute, json_value, many, one, transaction, validate_runtime
 from app.errors import DomainError
 from app.services.knowledge import embed_task, parse_task, research
 from app.services.products import product_model
@@ -102,7 +102,8 @@ def run_once(requested_id=None):
         handler = handlers.get(job["job_type"])
         if not handler:
             raise DomainError(422, "VALIDATION_ERROR", "任务类型未启用")
-        with LeaseHeartbeat(job):
+        # 领取入口只能返回一个已加租约的任务；私有处理始终切换为该任务本人。
+        with actor(job["user_id"]), LeaseHeartbeat(job):
             handler(job)
     except Exception as error:
         # 不记录上游正文、用户原始输入和密钥；对外只保留受控错误文案。
@@ -112,7 +113,8 @@ def run_once(requested_id=None):
             job["job_type"],
             type(error).__name__,
         )
-        fail(job, error.message if isinstance(error, DomainError) else "任务处理失败，请重试")
+        with actor(job["user_id"]):
+            fail(job, error.message if isinstance(error, DomainError) else "任务处理失败，请重试")
     return True
 
 
@@ -155,6 +157,8 @@ def cleanup_asset(job):
 
 
 def main():
+    if settings().environment in {"production", "staging"}:
+        validate_runtime("worker")
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     stopped = False

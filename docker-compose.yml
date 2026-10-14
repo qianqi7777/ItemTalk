@@ -7,10 +7,12 @@ services:
       POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?Set bootstrap password}
       APP_DB_PASSWORD: ${DB_PASSWORD:?Set application password}
       MIGRATION_DB_PASSWORD: ${DB_MIGRATION_PASSWORD:?Set migration password}
+      WORKER_DB_PASSWORD: ${DB_WORKER_PASSWORD:?Set Worker password}
     volumes:
     - /opt/itemtalk/data/postgres:/var/lib/postgresql/data
     - ./init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
     - ./infra/init-roles.sh:/docker-entrypoint-initdb.d/02-roles.sh:ro
+    - ./infra/runtime-roles.sql:/docker-entrypoint-initdb.d/runtime-roles.sql:ro
     restart: unless-stopped
     healthcheck:
       test:
@@ -124,8 +126,8 @@ services:
       DB_HOST: db
       DB_PORT: '5432'
       DB_NAME: itemtalk
-      DB_USER: itemtalk_app
-      DB_PASSWORD: ${DB_PASSWORD:?Set application password}
+      DB_USER: itemtalk_worker
+      DB_PASSWORD: ${DB_WORKER_PASSWORD:?Set Worker password}
       BUILD_VERSION: ${RELEASE_SHA:?Set release SHA}
       JWT_SECRET: ${JWT_SECRET:?Set JWT secret}
       AUTH_COOKIE_SECURE: 'true'

@@ -66,7 +66,46 @@ def manifest(connection):
         "WHERE n.nspname='public' ORDER BY c.conname,pg_get_constraintdef(c.oid)"
     ).fetchall()
     constraints = [(name, canonical_constraint(definition)) for name, definition in constraints]
-    return {"tables": results, "extensions": extensions, "constraints": constraints}
+    # 数据摘要相同仍可能丢失隔离：恢复必须同时保存 FORCE RLS、策略、函数 owner
+    # 和 EXECUTE ACL，不能把 SECURITY DEFINER 函数恢复成超级用户/PUBLIC 可调用。
+    security_tables = connection.execute(
+        "SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,r.rolname,"
+        "ARRAY(SELECT a::text FROM unnest(c.relacl) a ORDER BY a::text) "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='public' AND c.relkind='r' "
+        "ORDER BY c.relname"
+    ).fetchall()
+    # pg_dump 会重排 ACL 中的角色；按完整授权项排序，不忽略权限内容和授予者。
+    column_grants = connection.execute(
+        "SELECT c.relname,a.attname,"
+        "ARRAY(SELECT acl::text FROM unnest(a.attacl) acl ORDER BY acl::text) "
+        "FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped "
+        "AND a.attacl IS NOT NULL ORDER BY c.relname,a.attname"
+    ).fetchall()
+    policies = connection.execute(
+        "SELECT tablename,policyname,permissive,roles::text,cmd,qual,with_check "
+        "FROM pg_policies WHERE schemaname='public' ORDER BY tablename,policyname"
+    ).fetchall()
+    functions = connection.execute(
+        "SELECT p.proname,pg_get_function_identity_arguments(p.oid),p.prosecdef,"
+        "p.proconfig::text,r.rolname,"
+        "ARRAY(SELECT a::text FROM unnest(p.proacl) a ORDER BY a::text),p.prosrc "
+        "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+        "JOIN pg_roles r ON r.oid=p.proowner WHERE n.nspname='public' AND "
+        "p.proname IN ('itemtalk_actor','itemtalk_register','itemtalk_login',"
+        "'itemtalk_queue_recover','itemtalk_queue_claim') ORDER BY p.proname"
+    ).fetchall()
+    return {
+        "tables": results,
+        "extensions": extensions,
+        "constraints": constraints,
+        "securityTables": security_tables,
+        "columnGrants": column_grants,
+        "policies": policies,
+        "functions": functions,
+    }
 
 
 def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
@@ -102,6 +141,8 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
     try:
         with psycopg.connect(**connect_args) as source:
             source.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            # 非管理角色受 RLS 过滤时直接失败，避免生成缺少私有数据的“成功”备份。
+            source.execute("SET LOCAL row_security=off")
             snapshot = source.execute("SELECT pg_export_snapshot()").fetchone()[0]
             expected = manifest(source)
             descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -111,8 +152,6 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
                     [
                         binaries["pg_dump"],
                         "--format=custom",
-                        "--no-owner",
-                        "--no-privileges",
                         "--snapshot",
                         snapshot,
                     ],
@@ -130,8 +169,6 @@ def restore_drill(pg_bin=None, output_directory=Path(".local-data/backups")):
             [
                 binaries["pg_restore"],
                 "--exit-on-error",
-                "--no-owner",
-                "--no-privileges",
                 "--dbname",
                 scratch,
                 str(backup),

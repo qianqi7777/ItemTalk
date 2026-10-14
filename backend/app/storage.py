@@ -52,7 +52,7 @@ class Storage:
             )
         else:
             action = "upload" if write else "read"
-            token = token_for(asset["id"], action)
+            token = token_for(asset["id"], action, owner=str(asset["owner_user_id"]))
             base = self.config.app_public_url.rstrip("/")
             url = f"{base}/api/v1/assets/{asset['id']}/content?token={token}"
         return url, expires.isoformat()

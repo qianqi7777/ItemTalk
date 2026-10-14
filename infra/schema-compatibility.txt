@@ -1,1 +1,1 @@
-expand-only
+requires-maintenance
