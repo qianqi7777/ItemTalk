@@ -208,6 +208,7 @@ def lexical_question(question, model):
 def retrieve(model_id, question, vector, limit=5):
     """同模型修订余弦扫描和 trigram 融合；每层证据均须处于 verified 状态。"""
     # 无关键词命中时不按UUID虚构词法贡献；C locale无法识别中文词时也只用有效信号。
+    bounded_limit = max(1, min(limit, 10))
     with transaction() as connection:
         model = one(
             connection,
@@ -236,7 +237,10 @@ def retrieve(model_id, question, vector, limit=5):
                 "k.embedding_revision=:revision AND k.embedding IS NOT NULL), ranked AS "
                 "(SELECT *,row_number() OVER(ORDER BY vector_distance,id) AS vector_rank,"
                 "row_number() OVER(ORDER BY text_score DESC,id) AS text_rank FROM eligible) "
-                "SELECT * FROM ranked ORDER BY (1.0/(60+vector_rank)+CASE WHEN text_score>0 "
+                # 长手册重复注意事项容易占满词法排名；保留两个最相关语义候选，
+                # 其余名额仍由融合分数选择，不能绕过上面的逐层来源核验。
+                "SELECT * FROM ranked ORDER BY CASE WHEN vector_rank<=:semantic_reserve "
+                "THEN 0 ELSE 1 END,(1.0/(60+vector_rank)+CASE WHEN text_score>0 "
                 "THEN 1.0/(60+text_rank) ELSE 0 END) DESC,id LIMIT :limit"
             ),
             vector=json_value(vector),
@@ -244,7 +248,8 @@ def retrieve(model_id, question, vector, limit=5):
             model=model_id,
             embedding_model=settings().embedding_model,
             revision=settings().embedding_revision,
-            limit=max(1, min(limit, 10)),
+            limit=bounded_limit,
+            semantic_reserve=min(2, bounded_limit),
         )
     return rows
 

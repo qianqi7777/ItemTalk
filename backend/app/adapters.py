@@ -385,6 +385,21 @@ class ModelGateway:
             return "\n\n".join(
                 f"演示资料{row['rank']}：{row['content'][:180]}[{row['rank']}]" for row in evidence
             )
+        # 拒绝危险步骤时不在标题/括注复述动作，避免安全说明本身触发风险规则。
+        # 这只约束生成形式，服务端风险和完整引用校验仍必须独立通过。
+        question += (
+            "\n正文、标题及括注涉及危险操作时，不要复述或列举危险动作名称；"
+            "统一写“请停止操作并联系官方专业支持。”并保留对应的[n]引用。"
+            "其他安全事实仍须按原始证据准确归纳，不得删去要求的引用编号。"
+        )
+        if coverage:
+            # 全部来源片段必须在有限输出窗口内出现，不能用冗长前几项挤掉末尾引用。
+            ranks = "、".join(f"[{row['rank']}]" for row in evidence)
+            question += (
+                "\n严格按下列编号逐项输出，每项最多80字，先列全所有项，"
+                "不写引言或结尾，不合并或跳过编号。每项写简要事实或固定安全提示，"
+                f"并在该项附对应引用。必须输出的完整编号清单：{ranks}。"
+            )
         if memories:
             return self.answer(question, evidence, subject, memories=memories)
         return self.answer(question, evidence, subject)

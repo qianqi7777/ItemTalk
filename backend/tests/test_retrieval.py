@@ -58,3 +58,41 @@ def test_zero_lexical_signal_uses_cosine_order_with_stable_ties(client):
     assert [r["chunk_no"] for r in result] == [1, 2, 3, 4, 5]
     assert all(r["text_score"] == 0 for r in result)
     assert result == retrieve(model["id"], "unmatchedzzzz", [1.0] + [0.0] * 1023, limit=5)
+
+
+def test_repeated_lexical_notices_do_not_evict_best_semantic_candidates(client):
+    register_login(client)
+    product = ready_product(client)
+    with transaction() as connection:
+        model = one(
+            connection,
+            "SELECT * FROM product_models WHERE id=:id",
+            id=UUID(product["productModelId"]),
+        )
+        pages = [(1, "manual alpha"), (2, "manual beta")] + [
+            (number, "pairing pairing pairing repeated notice") for number in range(3, 15)
+        ]
+        version = persist_document(
+            connection,
+            model,
+            "https://example.invalid/repeated-notices",
+            "notice regression",
+            "text/plain",
+            b"semantic-reserve-fixture",
+            pages,
+            True,
+        )
+        vectors = [[1.0, float(number) / 10] + [0.0] * 1022 for number, _ in pages]
+        publish_chunks(connection, model, version, pages, vectors)
+        execute(
+            connection,
+            "UPDATE knowledge_chunks SET verification_status='revoked' "
+            "WHERE document_version_id<>:v",
+            v=version["id"],
+        )
+    vector = [1.0] + [0.0] * 1023
+    result = retrieve(model["id"], "pairing", vector, limit=5)
+    assert len(result) == 5
+    assert [row["chunk_no"] for row in result[:2]] == [1, 2]
+    assert all(row["text_score"] > 0 for row in result[2:])
+    assert retrieve(model["id"], "pairing", vector, limit=1)[0]["chunk_no"] == 1
