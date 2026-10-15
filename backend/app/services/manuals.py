@@ -487,6 +487,72 @@ def latest_build(connection, manual, expected=None):
     }
 
 
+def reuse_public_source_section(connection, manual, section):
+    """个人手册可复用同输入的公共来源章；私人偏好章及他人私人章永不跨范围复用。"""
+    if (
+        manual["visibility"] != "private"
+        or manual["generation_profile"] != PROFILE
+        or not section["section_key"].startswith("source-")
+        or not section["input_hash"]
+        or not section["evidence_ids"]
+    ):
+        return False
+    prior = one(
+        connection,
+        "SELECT s.* FROM manual_sections s JOIN manuals m ON m.id=s.manual_id "
+        "WHERE m.product_model_id=:model AND m.visibility='public' "
+        "AND m.owner_user_id IS NULL AND m.user_product_instance_id IS NULL "
+        "AND m.context_snapshot='[]'::jsonb AND m.context_hash IS NULL "
+        "AND m.generation_profile=:profile AND s.section_key=:key "
+        "AND s.input_hash=:hash AND s.evidence_ids=:ids "
+        "AND s.generation_status='ready' AND s.personal_notes='[]'::jsonb "
+        "ORDER BY m.version DESC LIMIT 1 FOR SHARE OF s",
+        model=manual["product_model_id"],
+        profile=manual["generation_profile"],
+        key=section["section_key"],
+        hash=section["input_hash"],
+        ids=section["evidence_ids"],
+    )
+    if not prior or not prior["body"]:
+        return False
+    from app.services.guidance import risk_of
+
+    if risk_of(prior["body"], warning=True) == "high":
+        return False
+    references = many(
+        connection,
+        "SELECT knowledge_chunk_id,rank FROM manual_section_citations "
+        "WHERE manual_section_id=:id ORDER BY rank",
+        id=prior["id"],
+    )
+    # 完整来源章必须逐一覆盖本章证据；不能因缓存状态ready就信任缺失/错位的引用。
+    expected = [(chunk, rank) for rank, chunk in enumerate(section["evidence_ids"], 1)]
+    if [(row["knowledge_chunk_id"], row["rank"]) for row in references] != expected:
+        return False
+    execute(
+        connection,
+        "DELETE FROM manual_section_citations WHERE manual_section_id=:id",
+        id=section["id"],
+    )
+    execute(
+        connection,
+        "INSERT INTO manual_section_citations(manual_section_id,knowledge_chunk_id,rank) "
+        "SELECT :new,knowledge_chunk_id,rank FROM manual_section_citations "
+        "WHERE manual_section_id=:old",
+        new=section["id"],
+        old=prior["id"],
+    )
+    execute(
+        connection,
+        "UPDATE manual_sections SET body=:body,personal_notes='[]'::jsonb,"
+        "generation_status='ready',source_section_id=:old WHERE id=:id",
+        body=prior["body"],
+        old=prior["id"],
+        id=section["id"],
+    )
+    return True
+
+
 def generate(job):
     """Only unfinished requested chapters are generated; every write rechecks frozen inputs."""
     from app.services.guidance import risk_of
@@ -523,6 +589,12 @@ def generate(job):
         with transaction() as connection:
             fenced(connection, job)
             validate_inputs(connection, manual)
+            # source-*的生成输入不包含个人记忆；复用已核验公共章避免重复付费与输出漂移。
+            # validate_inputs已锁定并核验当前来源、型号及本人确认设置，最终发布仍会再检查。
+            reused = reuse_public_source_section(connection, manual, section)
+        if reused:
+            progress(job, "generating", 10 + int(80 * (number + 1) / len(sections)))
+            continue
         selected = (
             [by_id[id] for id in section["evidence_ids"]] if section["evidence_ids"] else chunks
         )
