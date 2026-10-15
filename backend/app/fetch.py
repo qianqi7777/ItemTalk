@@ -38,7 +38,7 @@ def encrypted_public_dns(host, port, **_kwargs):
         raise OSError("Encrypted DNS resolution failed") from None
 
 
-def public_addresses(url, resolver=socket.getaddrinfo):
+def public_addresses(url, resolver=None):
     parts = urlsplit(url)
     if (
         parts.scheme != "https"
@@ -48,6 +48,13 @@ def public_addresses(url, resolver=socket.getaddrinfo):
         or parts.port not in (None, 443)
     ):
         raise DomainError(422, "SOURCE_UNVERIFIED", "资料地址不符合安全要求")
+    if resolver is None:
+        # 来源登记和逐跳下载使用同一配置；DoH结果仍经过下方全部公网地址检查。
+        resolver = (
+            encrypted_public_dns
+            if settings().fetch_dns_provider == "cloudflare"
+            else socket.getaddrinfo
+        )
     try:
         addresses = {row[4][0] for row in resolver(parts.hostname, 443, type=socket.SOCK_STREAM)}
         if not addresses or any(
@@ -76,12 +83,7 @@ class PinnedHTTPS(http.client.HTTPSConnection):
 
 def fetch_public(url, maximum=50 * 1024 * 1024):
     for _ in range(4):
-        resolver = (
-            encrypted_public_dns
-            if settings().fetch_dns_provider == "cloudflare"
-            else socket.getaddrinfo
-        )
-        parts, addresses = public_addresses(url, resolver)
+        parts, addresses = public_addresses(url)
         connection = PinnedHTTPS(parts.hostname, addresses[0])
         try:
             path = parts.path or "/"
