@@ -350,7 +350,12 @@ def complete_run(run, on_token=None):
                 ranks = re.findall(r"\[(\d+)\]", answer)
                 # 不让不可信模型输出的超长数字触发 int 上限或引用无关的真实片段。
                 cited = {int(number) for number in ranks if len(number) <= 4}
-                if not ranks:
+                # “未提及”不能借真实片段变成有证据的否定结论；明确不足时丢弃附会引用。
+                insufficient = re.match(
+                    r"^(?:[*#>]+\s*)?(?:(?:目前|当前|现有)(?:已核验)?的?)?(?:资料|证据)不足",
+                    normalize(answer),
+                )
+                if not ranks or insufficient:
                     answer, citations = (
                         "现有已核验资料不足以支持这次回答。请补充更具体的问题或相关官方资料。",
                         [],

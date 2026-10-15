@@ -87,3 +87,28 @@ def test_unattributed_or_invalid_answer_never_becomes_a_verified_fact(
     answer = response.json()
     assert expected in answer["content"] and answer["citations"] == []
     assert "水下使用" not in answer["content"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "资料不足。给定证据中未提及该精确参数[1]。",
+        "**证据不足**。目前无法确认[1]。",
+        "目前已核验资料不足，无法确认该事实[1]。",
+    ],
+)
+def test_explicit_insufficiency_does_not_borrow_valid_citation(client, monkeypatch, stream, body):
+    register_login(client)
+    product = ready_product(client)
+    conversation = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
+    monkeypatch.setattr(ModelGateway, "answer", lambda *_args, **_kwargs: body)
+    monkeypatch.setattr(ModelGateway, "answer_stream", lambda *_args, **_kwargs: iter([body]))
+    endpoint = "stream" if stream else "messages"
+    response = post(
+        client, f"/conversations/{conversation['id']}/{endpoint}", {"content": "精确参数是多少？"}
+    )
+    assert response.status_code == (200 if stream else 201)
+    message = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()["items"][-1]
+    assert "现有已核验资料不足" in message["content"]
+    assert message["citations"] == []
