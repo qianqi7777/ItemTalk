@@ -11,6 +11,9 @@ from app.safety import risk_of
         "在医院、火车优先座位旁、存在易燃气体之处、自动门或火警警报器旁，"
         "请关闭耳机和其他Bluetooth设备 [1]。",
         "在医院、火车优先座位旁、存在易燃气体之处、自动门或火警警报器旁需关闭耳机及其他蓝牙设备，以防微波影响电子设备或引发意外；",
+        "在医院里、火车优先座位旁、存在易燃气体之处、自动门或火警警报器旁，"
+        "请关闭耳机和其他Bluetooth设备，否则可能导致意外 [1]。",
+        "在医院、火车优先座位旁、存在易燃气体之处、自动门或火警警报器旁须关闭耳机及Bluetooth设备。",
     ],
 )
 def test_device_shutdown_precaution_is_safe_only_in_warning_context(warning):
