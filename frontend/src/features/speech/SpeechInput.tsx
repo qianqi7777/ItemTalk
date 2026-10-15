@@ -11,12 +11,14 @@ export function SpeechInput({
   onConfirm: (text: string) => void;
 }) {
   const [recording, setRecording] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState('');
   const recorder = useRef<MediaRecorder | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
+  const startPending = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -26,11 +28,14 @@ export function SpeechInput({
     };
   }, []);
   const transcribe = async (file: File) => {
+    if (!mounted.current) return;
     setBusy(true);
     setError('');
     try {
       if (file.size > 7 * 1024 * 1024) throw new Error('转写音频需小于 7 MB');
       const asset = await upload(file);
+      // 上传或录音解码期间离开页面时，不再启动付费转写。
+      if (!mounted.current) return;
       const result = await post<{
         text: string;
         requiresConfirmation: boolean;
@@ -48,6 +53,10 @@ export function SpeechInput({
     if (recorder.current?.state === 'recording') recorder.current.stop();
   };
   const start = async () => {
+    // 权限弹窗尚未返回时不能并发申请多个流；按钮状态更新之前也必须互斥。
+    if (startPending.current || recording || busy) return;
+    startPending.current = true;
+    setStarting(true);
     setError('');
     let stream: MediaStream | undefined;
     try {
@@ -57,6 +66,11 @@ export function SpeechInput({
       )
         throw new Error('Recording unavailable');
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // 用户可能已切换产品或离开页面；迟到的授权只释放麦克风，不再开始录音。
+      if (!mounted.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const media = new MediaRecorder(stream);
       recorder.current = media;
       const chunks: Blob[] = [];
@@ -73,8 +87,12 @@ export function SpeechInput({
             await recordingToWav(new Blob(chunks, { type: media.mimeType })),
           );
         } catch (error) {
-          setError(error instanceof Error ? error.message : '录音格式转换失败');
-          setBusy(false);
+          if (mounted.current) {
+            setError(
+              error instanceof Error ? error.message : '录音格式转换失败',
+            );
+            setBusy(false);
+          }
         }
       };
       media.start();
@@ -82,7 +100,10 @@ export function SpeechInput({
       timer.current = setTimeout(stop, 60000);
     } catch {
       stream?.getTracks().forEach((track) => track.stop());
-      setError('无法使用麦克风，请检查权限或上传录音文件');
+      if (mounted.current) setError('无法使用麦克风，请检查权限或上传录音文件');
+    } finally {
+      startPending.current = false;
+      if (mounted.current) setStarting(false);
     }
   };
   return (
@@ -95,7 +116,8 @@ export function SpeechInput({
         ) : (
           <Button
             onClick={() => void start()}
-            disabled={busy}
+            disabled={busy || starting}
+            loading={starting}
             icon={<Mic size={16} />}
           >
             录音提问
@@ -108,7 +130,7 @@ export function SpeechInput({
             aria-label="上传录音"
             type="file"
             accept="audio/wav,audio/mpeg,audio/mp4,audio/webm"
-            disabled={busy || recording}
+            disabled={busy || recording || starting}
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void transcribe(file);
