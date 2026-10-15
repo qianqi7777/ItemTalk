@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Select, Spin, Upload } from 'antd';
 import {
   Check,
@@ -44,14 +44,30 @@ export function HomePage() {
   const [brand, setBrand] = useState('');
   const [code, setCode] = useState('');
   const [region, setRegion] = useState('');
+  const selectionRevision = useRef(0);
+  const selectProduct = useCallback((value?: ProductInstance) => {
+    // 切换、删除或重新识别即使回到同一产品，也不能接受此前页面的迟到轮询。
+    selectionRevision.current += 1;
+    setProduct(value);
+  }, []);
   useEffect(() => {
+    let active = true;
+    const revision = selectionRevision.current;
     void api<{ items: ProductInstance[] }>('/me/products')
       .then((response) => {
+        if (!active || revision !== selectionRevision.current) return;
         setProducts(response.items);
-        setProduct(response.items[0]);
+        selectProduct(response.items[0]);
       })
-      .catch((error) => setError(error.message));
-  }, []);
+      .catch((error) => {
+        if (active && revision === selectionRevision.current)
+          setError(error.message);
+      });
+    return () => {
+      active = false;
+      selectionRevision.current += 1;
+    };
+  }, [selectProduct]);
   const pollAttempt = useCallback(async () => {
     if (!attempt) return;
     try {
@@ -66,16 +82,21 @@ export function HomePage() {
   );
   const pollProduct = useCallback(async () => {
     if (!product) return;
+    const revision = selectionRevision.current;
     try {
       const updated = await api<ProductInstance>(`/me/products/${product.id}`);
+      if (revision !== selectionRevision.current) return;
       setProduct(updated);
       setProducts((old) =>
         old.map((item) => (item.id === updated.id ? updated : item)),
       );
-      if (updated.knowledgeJobId)
-        setJob(await api<Job>(`/jobs/${updated.knowledgeJobId}`));
+      if (updated.knowledgeJobId) {
+        const updatedJob = await api<Job>(`/jobs/${updated.knowledgeJobId}`);
+        if (revision === selectionRevision.current) setJob(updatedJob);
+      }
     } catch (error) {
-      setError(error instanceof Error ? error.message : '查询资料进度失败');
+      if (revision === selectionRevision.current)
+        setError(error instanceof Error ? error.message : '查询资料进度失败');
     }
   }, [product]);
   usePolling(
@@ -125,7 +146,7 @@ export function HomePage() {
             },
         newKey(),
       );
-      setProduct(result);
+      selectProduct(result);
       setProducts((old) => [
         result,
         ...old.filter((item) => item.id !== result.id),
@@ -157,7 +178,7 @@ export function HomePage() {
     }
   };
   const restartIdentification = () => {
-    setProduct(undefined);
+    selectProduct(undefined);
     setAttempt(undefined);
     setAsset(undefined);
     setJob(undefined);
@@ -228,7 +249,7 @@ export function HomePage() {
                   (item) => item.id !== product.id,
                 );
                 setProducts(remaining);
-                setProduct(remaining[0]);
+                selectProduct(remaining[0]);
                 setAsset(undefined);
                 setAttempt(undefined);
                 setJob(undefined);
@@ -246,7 +267,7 @@ export function HomePage() {
                   label: `${item.nickname || item.modelCode} · ${item.brandName}`,
                 }))}
                 onChange={(id) => {
-                  setProduct(products.find((item) => item.id === id));
+                  selectProduct(products.find((item) => item.id === id));
                   setJob(undefined);
                   setError('');
                 }}
@@ -264,7 +285,7 @@ export function HomePage() {
                 onClick={() =>
                   product.identityStatus === 'verified'
                     ? void retryBuild()
-                    : setProduct(undefined)
+                    : selectProduct(undefined)
                 }
               >
                 {product.identityStatus === 'verified'

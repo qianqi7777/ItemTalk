@@ -1077,6 +1077,8 @@ a:focus-visible {
   gap: 6px;
   color: #477349;
   font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .product-actions .ant-btn {
   height: 36px;
@@ -1750,6 +1752,7 @@ a:focus-visible {
     align-items: center;
     justify-content: space-between;
     flex-direction: row;
+    flex-wrap: wrap;
     border-top: 1px solid #d6e1cc;
     padding-top: 13px;
   }
