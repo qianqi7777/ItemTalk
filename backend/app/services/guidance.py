@@ -1,6 +1,5 @@
 "单步操作引导：安全/权限由领域服务决定，模型和检查点不能自行推进用户动作。"
 
-import re
 from copy import deepcopy
 from uuid import UUID, uuid4
 
@@ -9,35 +8,13 @@ from langgraph.types import Command
 from app.db import execute, json_value, many, one
 from app.errors import DomainError, missing
 from app.guidance_agent import plan, review_graph
-from app.security import idempotent, normalize, remember
+from app.safety import risk_of
+from app.security import idempotent, remember
 from app.services.chat import citation_for
 from app.services.products import new_job, owned, require_assets
 
-HIGH = re.compile(
-    "带电.{0,8}拆|拆.{0,8}(?:电源|机壳)|高压|燃气|短接|绕过.{0,"
-    "12}(?:保护|安全)|裸露.{0,8}(?:电|导线)|live.{0,15}(?:wire|"
-    "disassembl)|gas|bypass.{0,12}(?:safety|protect)"
-)
-MEDIUM = re.compile(
-    "(?:连接|拔|插).{0,8}电源|电源.{0,8}(?:接线|插|连接)|插座|"
-    "插头|高温|热表面|hotsurface|powerconnection"
-)
 STOP = "该操作风险较高，请停止操作并查阅官方安全说明或联系专业人员。"
 STALE = "核验资料已失效，引导已停止。请更新资料后重新创建引导。"
-
-
-def risk_of(text, warning=False):
-    value = re.sub(r"[\s\u200b-\u200d\ufeff]", "", normalize(text))
-    # 安全提示允许明确的禁止语句，动作本身只要命中高风险就拒绝。
-    # 不能让模型将危险指令塞入safetyNotes，借字段名称绕过检查。
-    if warning:
-        levels = []
-        for clause in re.split(r"[。；;，,]", value):
-            if re.match(r"^(?:请)?(?:勿|不要|禁止|切勿|不可|不得|严禁|避免)", clause):
-                continue
-            levels.append(risk_of(clause))
-        return "high" if "high" in levels else "medium" if "medium" in levels else "low"
-    return "high" if HIGH.search(value) else "medium" if MEDIUM.search(value) else "low"
 
 
 def selected_session(connection, session_id, user, lock=False):

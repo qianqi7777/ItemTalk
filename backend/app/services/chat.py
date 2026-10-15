@@ -7,6 +7,7 @@ from app.adapters import ModelGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError, missing
+from app.safety import risk_of
 from app.security import digest, normalize
 from app.services.products import owned, require_assets
 from app.storage import Storage
@@ -290,7 +291,8 @@ def complete_run(run, on_token=None):
                 id=message["id"],
             )
         question = message["content"] or ""
-        if assets:
+        # 明确危险的文字在读取附件、视觉、向量化或答案生成之前拒绝。
+        if assets and risk_of(question) != "high":
             images = [
                 (Storage().read(asset["object_key"], 10 * 1024 * 1024), asset["mime_type"])
                 for asset in assets
@@ -301,7 +303,7 @@ def complete_run(run, on_token=None):
                 question += "\n图片描述：" + json_value(observation.model_dump())
         if not question.strip():
             answer, citations = "请先转写录音并确认文字，再发送您的问题。", []
-        elif re.search(r"带电拆|高压|燃气|绕过.*保护|短接|拆.*电源", question):
+        elif risk_of(question) == "high":
             answer, citations = "此操作存在安全风险，请停止操作并联系官方售后或专业人员。", []
         else:
             vector = gateway.embed([question], run["user_id"])[0]
@@ -340,8 +342,17 @@ def complete_run(run, on_token=None):
                     answer = gateway.answer(
                         question, evidence, run["user_id"], memories=user_memories
                     )
-                cited = {int(number) for number in re.findall(r"\[(\d+)\]", answer)}
-                if not cited or any(number < 1 or number > len(chunks) for number in cited):
+                ranks = re.findall(r"\[(\d+)\]", answer)
+                # 不让不可信模型输出的超长数字触发 int 上限或引用无关的真实片段。
+                cited = {int(number) for number in ranks if len(number) <= 4}
+                if not ranks:
+                    answer, citations = (
+                        "现有已核验资料不足以支持这次回答。请补充更具体的问题或相关官方资料。",
+                        [],
+                    )
+                elif any(len(number) > 4 for number in ranks) or any(
+                    number < 1 or number > len(chunks) for number in cited
+                ):
                     answer, citations = "本次回答未能建立有效证据引用，请重新提问或补充型号。", []
                 else:
                     citations = [
