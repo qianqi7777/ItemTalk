@@ -11,6 +11,7 @@ import httpx
 from app.config import settings
 from app.db import transaction
 from app.errors import DomainError
+from app.identification import identification_with_evidence
 from app.schemas import GapIntent, IdentificationOutput, MemoryExtraction
 from app.security import consume
 from app.upstream import UpstreamError, response_error
@@ -126,7 +127,45 @@ class ModelGateway:
                         "每个候选只含一个型号，不得用斜杠拼接不同型号。"
                         "型号不清楚时返回空候选并请求补拍铭牌；不要只凭外观虚构精确型号。"
                         "地区和硬件版本未清晰显示时填 null，不得填 Unknown 或推测地区。"
-                        "存在无法确认的关键项时置信度不超过 0.6。用户最终确认，不能声称已核验。"
+                        "制造地(Made in)、认证标志和生产年份不是销售地区或硬件修订。"
+                        + (
+                            "图像候选额外返回 modelText、regionText、hardwareRevisionText："
+                            "逐字摘录图片中支持对应字段的文字，不是外观解释；看不见填 null。"
+                            "modelText 必须包含完整型号；未读到型号文字的外观猜测不能列为候选。"
+                            "regionText 必须是明确的销售地区/Region/Market 标签，不能用制造国。"
+                            "hardwareRevisionText 必须是硬件版本/Hardware/Rev 标签，"
+                            "不能用固件或年份。"
+                            "对应值保留标签原文，不自行翻译缩写。"
+                            if images
+                            else ""
+                        )
+                        + "存在无法确认的关键项时置信度不超过 0.6。用户最终确认，不能声称已核验。"
+                        + (
+                            "三个文字摘录字段只放在每个 candidates 元素内，顶层只允许 "
+                            "candidates 和 clarification。\n输出结构示例："
+                            + json.dumps(
+                                {
+                                    "candidates": [
+                                        {
+                                            "brandName": "示例品牌",
+                                            "modelCode": "AB-10",
+                                            "region": None,
+                                            "hardwareRevision": None,
+                                            "confidence": 0.6,
+                                            "evidence": "可见品牌和完整型号文字",
+                                            "modelText": "AB-10",
+                                            "regionText": None,
+                                            "hardwareRevisionText": None,
+                                        }
+                                    ],
+                                    "clarification": "未见地区和硬件标签，请补拍铭牌。",
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n示例只表示结构，实际内容必须来自本次输入。"
+                            if images
+                            else ""
+                        )
                     ),
                 },
                 {"role": "user", "content": content},
@@ -138,13 +177,9 @@ class ModelGateway:
             payload["enable_thinking"] = False
         result = self.request(role, "/chat/completions", payload)
         try:
-            output = IdentificationOutput.model_validate(
-                json.loads(result["choices"][0]["message"]["content"])
+            return identification_with_evidence(
+                json.loads(result["choices"][0]["message"]["content"]), text, images=bool(images)
             )
-            if images and output.clarification:
-                for candidate in output.candidates:
-                    candidate.confidence = min(candidate.confidence, 0.6)
-            return output
         except (KeyError, IndexError, ValueError, TypeError):
             raise DomainError(502, "UPSTREAM_MODEL_ERROR", "识别结果格式无效") from None
 
