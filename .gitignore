@@ -1,5 +1,8 @@
-# 本地设计资料与 AI 协作说明，不提交到仓库
+# 本地设计、开发过程记录、上线审核计划及验收报告，不提交到仓库
 /ignored-docs/
+# 过程文档已移入 ignored-docs/operations/；阻止旧位置重新生成后被误提交。
+/infra/V1_PRODUCTION_PLAN.md
+/infra/COS_BACKUP_CAM.md
 /docinit
 /design
 /AGENTS.md

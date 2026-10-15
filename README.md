@@ -103,7 +103,7 @@ uv run python -m app.cli register-source --brand <品牌> --url <官方资料链
 
 登记来源仅加入待核验 URL，不发布知识。链接须属于该品牌已登记的官方域名并通过公网地址检查；撤销的来源不能借登记恢复。搜索漏召回时，研究任务可使用这些候选来源，仍须独立核验正文中的型号、地区和硬件版本。
 
-搜索漏召回时可以复用已登记的官方来源，但来源路径须明确匹配型号，且仍走下载、解析、精确适用性和三级发布核验。不得把搜索摘要或非官方站点当作已核验证据。开发机 Fake-IP DNS 如解析到保留地址，默认 SSRF 检查会拒绝；可显式使用 `FETCH_DNS_PROVIDER=cloudflare`，通过加密 DNS 获取地址后仍逐跳检查公网 IP、固定连接并验证 TLS，生产默认保持 system。
+搜索漏召回时可以复用已登记的官方来源，但来源路径须明确匹配型号，且仍走下载、解析、精确适用性和三级发布核验。不得把搜索摘要或非官方站点当作已核验证据。开发机 Fake-IP DNS 如解析到保留地址，默认 SSRF 检查会拒绝；可显式使用 `FETCH_DNS_PROVIDER=cloudflare`，来源登记和资料下载使用相同解析配置，通过加密 DNS 获取地址后仍逐跳检查公网 IP、固定连接并验证 TLS，生产默认保持 system。
 
 ## 发布与回滚
 
@@ -139,6 +139,10 @@ COS 定时备份使用独立 `backup` 运维容器，包含 PostgreSQL 16 客户
 
 运行前须为 `/opt/itemtalk/backups` 准备与 `BACKUP_UID/BACKUP_GID` 一致的受限所有权，确认 DB 已运行并预留恢复空间。`BACKUP_COS_SECRET_ID/KEY` 只读应用资产；独立 `DB_BACKUP_COS_*` 从服务器受限 `.env.backup` 加载，不回退到应用桶。已上传核验的本地备份保留 7 天，COS 长期保留且无自动删除接口。默认 `BACKUP_JOBS_ENABLED=false`、告警渠道未连接。详细配置、重试状态、真实测试入口和部署/回滚要求见 [备份与告警方案](infra/BACKUP_AND_ALERTS.md)及 [配置模板](infra/backup.env.example)。Mock 测试、真实服务待验收和生产未启用必须分别记录。
 
-完整上线审核包见 [V1生产执行方案](infra/V1_PRODUCTION_PLAN.md)，包含环境变量位置、控制台联系人与最小权限、逐项真实验收、停写与回滚。可选SMTP后备 `python -m app.ops_mail --env-file <受限文件>` 默认只检查配置，明确真实测试开关、参数及新报告齐备后才单次投递；SMTP接受仍不能证明邮件送达。生产启用及真实测试必须分别确认，准备完成后停止等待。
+上线前按 [维护手册](infra/MAINTENANCE.md)审核环境变量、固定镜像、停写备份及回滚步骤。可选SMTP后备 `python -m app.ops_mail --env-file <受限文件>` 默认只检查配置，明确真实测试开关、参数及新报告齐备后才单次投递；SMTP接受仍不能证明邮件送达。生产启用及真实测试必须分别确认。
+
+数据库备份专用子用户使用 [最小权限策略模板](infra/cos-backup-policy.example.json)；对象读写只授权备份前缀，桶配置只读，显式拒绝删除、桶配置写入与对象ACL更改。真实凭据仅在本地/服务器受限文件，绑定及更新密钥后再单独确认真实测试。
+
+开发过程记录、配置指导、阶段验收报告及针对当前环境的上线审核计划统一存放于 Git 忽略的 `ignored-docs/`，不提交。仓库保留应用使用说明、通用运维手册、无密钥配置模板及可执行代码。
 
 真实 COS 供应商预检可在本地 `backend` 运行 `uv run python -m app.cos_probe --real-cos --origin https://49.233.65.195 --report ../.cache/cos-probe-<本轮唯一标识>.json`。需先在本地 `.env` 填入 COS 四个变量，报告独占创建；该命令只为本轮新建合成图片对象，核对私有桶、前端 Origin 的 PUT/GET 与 Content-Type CORS、签名上传/读取、临时键覆盖不影响私有副本，以及本地归档恢复字节到 COS。清理前核对对象 nonce，不删归属不符的对象；强制退出或清理失败须依据受限报告人工核对残留。程序无数据库/模型调用，SDK和HTTP响应不输出到日志、响应限4KiB、15秒超时且无自动重试；报告只能证明供应商协议，应用权限和数据库配对恢复另需验收。

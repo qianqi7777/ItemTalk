@@ -34,7 +34,11 @@
     },
     {
       "effect": "deny",
-      "action": ["name/cos:Delete*", "name/cos:PutBucket*"],
+      "action": [
+        "name/cos:Delete*",
+        "name/cos:PutBucket*",
+        "name/cos:PutObjectACL"
+      ],
       "resource": [
         "qcs::cos:ap-nanjing:uid/1314964135:itemtalk-backup-1314964135/*"
       ]
