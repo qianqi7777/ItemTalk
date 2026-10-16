@@ -27,6 +27,21 @@ import { DeleteAction } from '../components/DeleteAction';
 
 type QuestionDraft = { content: string; assets: Asset[] };
 
+function clarificationPhotos(messages: Message[]) {
+  const last = messages.at(-1);
+  const question = [...messages]
+    .reverse()
+    .find((message) => message.role === 'user');
+  // 图片澄清没有操作引用；恢复时显式放回草稿，用户可移除，不隐式修改请求附件。
+  return last?.role === 'assistant' &&
+    !last.citations.length &&
+    !question?.content?.trim()
+    ? (question?.assets || []).filter((asset) =>
+        asset.mimeType.startsWith('image/'),
+      )
+    : [];
+}
+
 function QuestionImages({ assets }: { assets: Asset[] }) {
   return (
     <div className="chat-attachments">
@@ -168,7 +183,8 @@ export function ChatPanel({
       setMessageCursor(page.nextCursor);
       setRunId('');
       setRetryDraft(undefined);
-      setPhotos([]);
+      setPhotos(clarificationPhotos(page.items));
+      setInput('');
       setHistoryOpen(false);
     } catch (error) {
       setError(error instanceof Error ? error.message : '会话恢复失败');
@@ -248,6 +264,8 @@ export function ChatPanel({
         previous,
         assets.map((asset) => asset.id),
       );
+      if (run.status === 'completed' && !question.trim() && assets.length)
+        setPhotos((current) => (current.length ? current : assets));
       if (run.message) {
         setMessages((current) => [...current, run.message!]);
         setRetryDraft(undefined);
@@ -288,6 +306,10 @@ export function ChatPanel({
           ...current.filter((message) => message.id !== run.message!.id),
           run.message!,
         ]);
+        if (retryDraft && !retryDraft.content.trim())
+          setPhotos((current) =>
+            current.length ? current : retryDraft.assets,
+          );
         setError('');
         setRetryDraft(undefined);
       } else setError(run.lastError || `当前回答状态：${run.status}`);
@@ -551,6 +573,7 @@ export function ChatPanel({
         {!!photos.length && (
           <div aria-label="待发送图片" aria-live="polite">
             <QuestionImages assets={photos} />
+            <small>图片将随下一条问题发送，可补充文字或移除。</small>
             {photos.map((photo, index) => (
               <Button
                 key={photo.id}

@@ -21,14 +21,17 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   await page.getByRole('button', { name: '确认此型号' }).click();
   await expect(page.getByText('资料已就绪')).toBeVisible({ timeout: 30000 });
   // 聊天附件走正常上传/确认与SSE，不复用识别照片的内存状态。
-  await page.locator('.chat-photo-draft input[type=file]').setInputFiles({
+  const questionImage = {
     name: 'question.png',
     mimeType: 'image/png',
     buffer: Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
       'base64',
     ),
-  });
+  };
+  await page
+    .locator('.chat-photo-draft input[type=file]')
+    .setInputFiles(questionImage);
   await expect(page.getByLabel('待发送图片')).toBeVisible();
   await page.getByLabel('提问内容').fill('如何开机？');
   await page.getByRole('button', { name: '发送问题' }).click();
@@ -48,6 +51,37 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole('button', { name: '有帮助' }).click();
   await expect(page.getByText('反馈已记录')).toBeVisible();
+  // 纯图片澄清后刷新/恢复历史，补充的问题仍显式携带同一附件。
+  await page
+    .locator('.chat-photo-draft input[type=file]')
+    .setInputFiles(questionImage);
+  await expect(page.getByLabel('待发送图片')).toBeVisible();
+  const imageRequest = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' && request.url().endsWith('/stream'),
+  );
+  await page.getByRole('button', { name: '发送问题' }).click();
+  const attachedId = (await imageRequest).postDataJSON().assetIds[0];
+  await expect(
+    page.getByText(
+      '图片已收到。请补充您想了解的问题，例如充电方法或指示灯异常。',
+    ),
+  ).toBeVisible();
+  await page.reload();
+  await page.getByRole('button', { name: '历史会话' }).click();
+  await page.getByRole('button', { name: '如何开机？', exact: true }).click();
+  await expect(page.getByLabel('待发送图片')).toBeVisible();
+  await page.getByLabel('提问内容').fill('如何带电拆机并短接保护？');
+  const followupRequest = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' && request.url().endsWith('/stream'),
+  );
+  await page.getByRole('button', { name: '发送问题' }).click();
+  expect((await followupRequest).postDataJSON().assetIds).toEqual([attachedId]);
+  await expect(
+    page.getByText('此操作存在安全风险，请停止操作并联系官方售后或专业人员。'),
+  ).toBeVisible();
+  await expect(page.getByLabel('待发送图片')).toHaveCount(0);
   await page.getByRole('button', { name: '使用说明书' }).click();
   await expect(page.getByRole('heading', { name: '产品概览' })).toBeVisible({
     timeout: 30000,
@@ -62,7 +96,7 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     page.locator('.messages').getByText(/长按电源键 3 秒开机/),
   ).toBeVisible();
   await expect(page.locator('.messages').getByText('反馈已记录')).toBeVisible();
-  await expect(page.locator('.bubble.user img')).toHaveCount(1);
+  await expect(page.locator('.bubble.user img')).toHaveCount(3);
   await page.getByLabel('提问内容').fill('请记住我喜欢简短中文，如何开机？');
   await page.getByRole('button', { name: '发送问题' }).click();
   await expect(page.getByRole('button', { name: '发送问题' })).toBeVisible();
