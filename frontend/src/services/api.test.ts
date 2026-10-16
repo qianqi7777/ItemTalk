@@ -59,7 +59,9 @@ test('流式草稿含多余引用时使用服务端最终核验消息', async ()
   const fetch = vi
     .fn()
     .mockResolvedValueOnce(
-      new Response(source, { headers: { 'Content-Type': 'text/event-stream' } }),
+      new Response(source, {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
     )
     .mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'run', status: 'completed', message })),
