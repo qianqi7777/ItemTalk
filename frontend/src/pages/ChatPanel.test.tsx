@@ -102,7 +102,7 @@ const photo = {
   readUrl: '/private-photo',
 };
 
-test('图片上传不自动提问，纯图片发送并在消息中展示附件', async () => {
+test('纯图片不自动提问，澄清后保留图片供下一句补充问题使用', async () => {
   vi.mocked(upload).mockResolvedValue(photo);
   vi.mocked(post).mockResolvedValue({ id: 'conversation' });
   vi.mocked(streamAnswer).mockResolvedValue({ id: 'run', status: 'completed' });
@@ -121,11 +121,19 @@ test('图片上传不自动提问，纯图片发送并在消息中展示附件',
     '',
   ]);
   expect(vi.mocked(streamAnswer).mock.calls[0][6]).toEqual(['photo-1']);
-  expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument();
-  expect(screen.getByRole('img', { name: '提问图片 1' })).toHaveAttribute(
+  expect(screen.getByLabelText('待发送图片')).toBeVisible();
+  expect(container.querySelector('.bubble.user img')).toHaveAttribute(
     'src',
     '/private-photo',
   );
+  await userEvent.type(screen.getByLabelText('提问内容'), '充满需要多久？');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await waitFor(() => expect(streamAnswer).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(streamAnswer).mock.calls[1][1]).toBe('充满需要多久？');
+  expect(vi.mocked(streamAnswer).mock.calls[1][6]).toEqual(['photo-1']);
+  expect(upload).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument();
 });
 
 test('附件失败重试沿用原run和图片，不重新上传或重复用户消息', async () => {
@@ -208,7 +216,7 @@ test('上传失败保持文字草稿，上传期间阻止发送与会话切换',
   expect(streamAnswer).not.toHaveBeenCalled();
 });
 
-test('恢复历史消息时展示服务端返回的图片', async () => {
+test('恢复历史纯图片澄清时展示并保留图片，继续问题沿用同一会话', async () => {
   vi.mocked(api).mockImplementation(async (path) => {
     if (path === '/capabilities') return { speechToText: false } as never;
     if (path.startsWith('/conversations?'))
@@ -222,6 +230,12 @@ test('恢复历史消息时展示服务端返回的图片', async () => {
           citations: [],
           assets: [photo],
         },
+        {
+          id: 'clarification',
+          role: 'assistant',
+          content: '请补充具体问题',
+          citations: [],
+        },
       ],
     } as never;
   });
@@ -230,6 +244,16 @@ test('恢复历史消息时展示服务端返回的图片', async () => {
   await userEvent.click(
     await screen.findByRole('button', { name: '图片会话' }),
   );
-  expect(await screen.findByRole('img', { name: '提问图片 1' })).toBeVisible();
-  expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument();
+  expect(await screen.findByLabelText('待发送图片')).toBeVisible();
+  vi.mocked(streamAnswer).mockResolvedValue({
+    id: 'followup',
+    status: 'completed',
+  });
+  await userEvent.type(screen.getByLabelText('提问内容'), '怎样充电？');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await waitFor(() => expect(streamAnswer).toHaveBeenCalled());
+  expect(vi.mocked(streamAnswer).mock.calls[0][0]).toBe('saved');
+  expect(vi.mocked(streamAnswer).mock.calls[0][6]).toEqual(['photo-1']);
+  expect(upload).not.toHaveBeenCalled();
+  expect(post).not.toHaveBeenCalled();
 });
