@@ -30,7 +30,7 @@ def test_unsafe_chat_is_blocked_before_any_provider_call(client, monkeypatch, qu
     def forbidden(*args, **kwargs):
         pytest.fail("Unsafe request must not reach a model")
 
-    for method in ("embed", "answer", "answer_stream", "identify"):
+    for method in ("embed", "answer", "answer_stream", "identify", "assess_answer"):
         monkeypatch.setattr(ModelGateway, method, forbidden)
     endpoint = "stream" if stream else "messages"
     response = post(

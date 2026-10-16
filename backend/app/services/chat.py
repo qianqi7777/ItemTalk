@@ -7,6 +7,7 @@ from app.adapters import ModelGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError, missing
+from app.grounding import grounded_answer
 from app.safety import risk_of
 from app.security import digest, normalize
 from app.services.products import owned, require_assets
@@ -269,6 +270,42 @@ def citation_for(chunk, rank):
     }
 
 
+def live_citations(connection, model_id, selected, citations):
+    """语义核验可能耗时；最终写回前重查来源状态与被引用正文，不复用过期快照。"""
+    if not citations:
+        return []
+    ids = [UUID(row["knowledgeChunkId"]) for row in citations]
+    rows = many(
+        connection,
+        "SELECT k.*,v.version_label,v.verified_at,d.title,s.url FROM knowledge_chunks k "
+        "JOIN product_models m ON m.id=k.product_model_id "
+        "JOIN document_versions v ON v.id=k.document_version_id "
+        "JOIN documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id "
+        "JOIN document_model_links l ON l.document_version_id=v.id AND l.product_model_id=m.id "
+        "WHERE k.id=ANY(:ids) AND k.product_model_id=:model "
+        "AND k.verification_status='verified' AND m.identity_status='verified' "
+        "AND m.verification_status='verified' AND v.verification_status='verified' "
+        "AND s.verification_status='verified' AND l.match_type='exact' "
+        "AND k.embedding_model=:embedding_model AND k.embedding_revision=:revision "
+        "AND k.embedding IS NOT NULL",
+        ids=ids,
+        model=model_id,
+        embedding_model=settings().embedding_model,
+        revision=settings().embedding_revision,
+    )
+    fresh = {row["id"]: row for row in rows}
+    prior = {row["id"]: row for row in selected}
+    if set(fresh) != set(ids) or any(
+        any(
+            fresh[id][key] != prior[id][key]
+            for key in ("content", "document_version_id", "page_start", "page_end")
+        )
+        for id in ids
+    ):
+        raise DomainError(409, "SOURCE_UNVERIFIED", "回答引用的资料状态已变化，请重新提问")
+    return [citation_for(fresh[UUID(row["knowledgeChunkId"])], row["rank"]) for row in citations]
+
+
 def complete_run(run, on_token=None):
     """外部调用在事务外执行；结果写回时再次确认账号、实例和运行仍有效。"""
     gateway = ModelGateway()
@@ -365,9 +402,32 @@ def complete_run(run, on_token=None):
                 ):
                     answer, citations = "本次回答未能建立有效证据引用，请重新提问或补充型号。", []
                 else:
-                    citations = [
-                        citation_for(chunks[number - 1], number) for number in sorted(cited)
-                    ]
+                    with transaction() as connection:
+                        owned(connection, "conversations", run["conversation_id"], run["user_id"])
+                        current = one(
+                            connection,
+                            "SELECT * FROM assistant_runs WHERE id=:id",
+                            id=run["id"],
+                        )
+                        if not current:
+                            missing()
+                        if current["status"] != "running":
+                            return run_view(connection, current)
+                    referenced = [evidence[number - 1] for number in sorted(cited)]
+                    assessment = gateway.assess_answer(
+                        question, answer, referenced, run["user_id"], memories=user_memories
+                    )
+                    supported, retained = grounded_answer(answer, referenced, assessment)
+                    if supported is None:
+                        answer, citations = (
+                            "现有已核验资料不足以支持这次回答。请补充更具体的问题或相关官方资料。",
+                            [],
+                        )
+                    else:
+                        answer = supported
+                        citations = [
+                            citation_for(chunks[number - 1], number) for number in sorted(retained)
+                        ]
         with transaction() as connection:
             owned(connection, "conversations", run["conversation_id"], run["user_id"])
             current = one(
@@ -375,6 +435,9 @@ def complete_run(run, on_token=None):
             )
             if current["status"] != "running":
                 return run_view(connection, current)
+            citations = live_citations(
+                connection, instance["product_model_id"], chunks if citations else [], citations
+            )
             if gap_summary:
                 from app.services.gaps import record
 
