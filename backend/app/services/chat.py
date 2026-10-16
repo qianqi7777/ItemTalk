@@ -336,7 +336,8 @@ def complete_run(run, on_token=None):
             )
         question = message["content"] or ""
         # 明确危险的文字在读取附件、视觉、向量化或答案生成之前拒绝。
-        if assets and risk_of(question) != "high":
+        # 附件本身不是操作目标；纯图片先确认问题，不能从视觉候选猜出步骤并附会官方引用。
+        if assets and question.strip() and risk_of(question) != "high":
             images = [
                 (Storage().read(asset["object_key"], 10 * 1024 * 1024), asset["mime_type"])
                 for asset in assets
@@ -346,7 +347,12 @@ def complete_run(run, on_token=None):
                 observation = gateway.identify(question, images, run["user_id"])
                 question += "\n图片描述：" + json_value(observation.model_dump())
         if not question.strip():
-            answer, citations = "请先转写录音并确认文字，再发送您的问题。", []
+            answer, citations = (
+                "图片已收到。请补充您想了解的问题，例如充电方法或指示灯异常。"
+                if any(asset["mime_type"].startswith("image/") for asset in assets)
+                else "请先转写录音并确认文字，再发送您的问题。",
+                [],
+            )
         elif risk_of(question) == "high":
             answer, citations = "此操作存在安全风险，请停止操作并联系官方售后或专业人员。", []
         else:
