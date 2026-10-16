@@ -206,8 +206,10 @@ def lexical_question(question, model):
     return result.strip() if re.search(r"\w", result) else normalize(question)
 
 
-def retrieve(model_id, question, vector, limit=5):
+def retrieve(model_id, question, vector, limit=10):
     """同模型修订余弦扫描和 trigram 融合；每层证据均须处于 verified 状态。"""
+    # 长手册的直接证据可能排在第6–10位；问答与Gold Set使用相同的有界候选深度。
+    # 增加候选不放宽逐层核验；生成后的引用支持判断仍独立执行。
     # 无关键词命中时不按UUID虚构词法贡献；C locale无法识别中文词时也只用有效信号。
     bounded_limit = max(1, min(limit, 10))
     with transaction() as connection:
