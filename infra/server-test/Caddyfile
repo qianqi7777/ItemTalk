@@ -1,0 +1,20 @@
+:8080 {
+    redir /itemtalk /itemtalk/ 308
+    handle_path /itemtalk/* {
+        handle /api/* {
+            reverse_proxy api:8000 {
+                header_up X-Forwarded-Proto http
+                header_up X-Forwarded-Prefix /itemtalk
+                flush_interval -1
+            }
+        }
+        handle {
+            root * /srv
+            try_files {path} /index.html
+            file_server
+        }
+    }
+    handle {
+        respond 404
+    }
+}

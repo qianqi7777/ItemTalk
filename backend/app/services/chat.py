@@ -7,6 +7,8 @@ from app.adapters import ModelGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError, missing
+from app.grounding import grounded_answer
+from app.safety import risk_of
 from app.security import digest, normalize
 from app.services.products import owned, require_assets
 from app.storage import Storage
@@ -207,6 +209,7 @@ def lexical_question(question, model):
 def retrieve(model_id, question, vector, limit=5):
     """同模型修订余弦扫描和 trigram 融合；每层证据均须处于 verified 状态。"""
     # 无关键词命中时不按UUID虚构词法贡献；C locale无法识别中文词时也只用有效信号。
+    bounded_limit = max(1, min(limit, 10))
     with transaction() as connection:
         model = one(
             connection,
@@ -235,7 +238,10 @@ def retrieve(model_id, question, vector, limit=5):
                 "k.embedding_revision=:revision AND k.embedding IS NOT NULL), ranked AS "
                 "(SELECT *,row_number() OVER(ORDER BY vector_distance,id) AS vector_rank,"
                 "row_number() OVER(ORDER BY text_score DESC,id) AS text_rank FROM eligible) "
-                "SELECT * FROM ranked ORDER BY (1.0/(60+vector_rank)+CASE WHEN text_score>0 "
+                # 长手册重复注意事项容易占满词法排名；保留两个最相关语义候选，
+                # 其余名额仍由融合分数选择，不能绕过上面的逐层来源核验。
+                "SELECT * FROM ranked ORDER BY CASE WHEN vector_rank<=:semantic_reserve "
+                "THEN 0 ELSE 1 END,(1.0/(60+vector_rank)+CASE WHEN text_score>0 "
                 "THEN 1.0/(60+text_rank) ELSE 0 END) DESC,id LIMIT :limit"
             ),
             vector=json_value(vector),
@@ -243,7 +249,8 @@ def retrieve(model_id, question, vector, limit=5):
             model=model_id,
             embedding_model=settings().embedding_model,
             revision=settings().embedding_revision,
-            limit=max(1, min(limit, 10)),
+            limit=bounded_limit,
+            semantic_reserve=min(2, bounded_limit),
         )
     return rows
 
@@ -261,6 +268,42 @@ def citation_for(chunk, rank):
         "versionLabel": chunk["version_label"],
         "verifiedAt": chunk["verified_at"].isoformat() if chunk["verified_at"] else None,
     }
+
+
+def live_citations(connection, model_id, selected, citations):
+    """语义核验可能耗时；最终写回前重查来源状态与被引用正文，不复用过期快照。"""
+    if not citations:
+        return []
+    ids = [UUID(row["knowledgeChunkId"]) for row in citations]
+    rows = many(
+        connection,
+        "SELECT k.*,v.version_label,v.verified_at,d.title,s.url FROM knowledge_chunks k "
+        "JOIN product_models m ON m.id=k.product_model_id "
+        "JOIN document_versions v ON v.id=k.document_version_id "
+        "JOIN documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id "
+        "JOIN document_model_links l ON l.document_version_id=v.id AND l.product_model_id=m.id "
+        "WHERE k.id=ANY(:ids) AND k.product_model_id=:model "
+        "AND k.verification_status='verified' AND m.identity_status='verified' "
+        "AND m.verification_status='verified' AND v.verification_status='verified' "
+        "AND s.verification_status='verified' AND l.match_type='exact' "
+        "AND k.embedding_model=:embedding_model AND k.embedding_revision=:revision "
+        "AND k.embedding IS NOT NULL",
+        ids=ids,
+        model=model_id,
+        embedding_model=settings().embedding_model,
+        revision=settings().embedding_revision,
+    )
+    fresh = {row["id"]: row for row in rows}
+    prior = {row["id"]: row for row in selected}
+    if set(fresh) != set(ids) or any(
+        any(
+            fresh[id][key] != prior[id][key]
+            for key in ("content", "document_version_id", "page_start", "page_end")
+        )
+        for id in ids
+    ):
+        raise DomainError(409, "SOURCE_UNVERIFIED", "回答引用的资料状态已变化，请重新提问")
+    return [citation_for(fresh[UUID(row["knowledgeChunkId"])], row["rank"]) for row in citations]
 
 
 def complete_run(run, on_token=None):
@@ -290,7 +333,8 @@ def complete_run(run, on_token=None):
                 id=message["id"],
             )
         question = message["content"] or ""
-        if assets:
+        # 明确危险的文字在读取附件、视觉、向量化或答案生成之前拒绝。
+        if assets and risk_of(question) != "high":
             images = [
                 (Storage().read(asset["object_key"], 10 * 1024 * 1024), asset["mime_type"])
                 for asset in assets
@@ -301,7 +345,7 @@ def complete_run(run, on_token=None):
                 question += "\n图片描述：" + json_value(observation.model_dump())
         if not question.strip():
             answer, citations = "请先转写录音并确认文字，再发送您的问题。", []
-        elif re.search(r"带电拆|高压|燃气|绕过.*保护|短接|拆.*电源", question):
+        elif risk_of(question) == "high":
             answer, citations = "此操作存在安全风险，请停止操作并联系官方售后或专业人员。", []
         else:
             vector = gateway.embed([question], run["user_id"])[0]
@@ -340,13 +384,50 @@ def complete_run(run, on_token=None):
                     answer = gateway.answer(
                         question, evidence, run["user_id"], memories=user_memories
                     )
-                cited = {int(number) for number in re.findall(r"\[(\d+)\]", answer)}
-                if not cited or any(number < 1 or number > len(chunks) for number in cited):
+                ranks = re.findall(r"\[(\d+)\]", answer)
+                # 不让不可信模型输出的超长数字触发 int 上限或引用无关的真实片段。
+                cited = {int(number) for number in ranks if len(number) <= 4}
+                # “未提及”不能借真实片段变成有证据的否定结论；明确不足时丢弃附会引用。
+                insufficient = re.match(
+                    r"^(?:[*#>]+\s*)?(?:(?:目前|当前|现有)(?:已核验)?的?)?(?:资料|证据)不足",
+                    normalize(answer),
+                )
+                if not ranks or insufficient:
+                    answer, citations = (
+                        "现有已核验资料不足以支持这次回答。请补充更具体的问题或相关官方资料。",
+                        [],
+                    )
+                elif any(len(number) > 4 for number in ranks) or any(
+                    number < 1 or number > len(chunks) for number in cited
+                ):
                     answer, citations = "本次回答未能建立有效证据引用，请重新提问或补充型号。", []
                 else:
-                    citations = [
-                        citation_for(chunks[number - 1], number) for number in sorted(cited)
-                    ]
+                    with transaction() as connection:
+                        owned(connection, "conversations", run["conversation_id"], run["user_id"])
+                        current = one(
+                            connection,
+                            "SELECT * FROM assistant_runs WHERE id=:id",
+                            id=run["id"],
+                        )
+                        if not current:
+                            missing()
+                        if current["status"] != "running":
+                            return run_view(connection, current)
+                    referenced = [evidence[number - 1] for number in sorted(cited)]
+                    assessment = gateway.assess_answer(
+                        question, answer, referenced, run["user_id"], memories=user_memories
+                    )
+                    supported, retained = grounded_answer(answer, referenced, assessment)
+                    if supported is None:
+                        answer, citations = (
+                            "现有已核验资料不足以支持这次回答。请补充更具体的问题或相关官方资料。",
+                            [],
+                        )
+                    else:
+                        answer = supported
+                        citations = [
+                            citation_for(chunks[number - 1], number) for number in sorted(retained)
+                        ]
         with transaction() as connection:
             owned(connection, "conversations", run["conversation_id"], run["user_id"])
             current = one(
@@ -354,6 +435,9 @@ def complete_run(run, on_token=None):
             )
             if current["status"] != "running":
                 return run_view(connection, current)
+            citations = live_citations(
+                connection, instance["product_model_id"], chunks if citations else [], citations
+            )
             if gap_summary:
                 from app.services.gaps import record
 

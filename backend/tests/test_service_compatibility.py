@@ -36,6 +36,7 @@ def test_vision_disables_thinking_and_caps_uncertain_candidates(monkeypatch):
                                             "modelCode": "AX3000T",
                                             "confidence": 0.99,
                                             "evidence": "产品页面文字",
+                                            "modelText": "AX3000T",
                                         }
                                     ],
                                     "clarification": "没有硬件版本铭牌",

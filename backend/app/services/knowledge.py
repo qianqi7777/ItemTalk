@@ -199,8 +199,19 @@ def persist_document(connection, model, url, title, mime, data, pages, trusted):
     return version
 
 
-def publish_chunks(connection, model, version, pages, vectors):
-    """发布的事务边界内再次检查三级核验，拒绝私有或被撤销的证据。"""
+def document_chunks(pages):
+    """页码与分片编号保持稳定；重试不能用当前批次的位置覆盖旧片段。"""
+    pieces = [
+        (page, text[offset : offset + 2000])
+        for page, text in pages
+        for offset in range(0, len(text), 2000)
+        if text[offset : offset + 2000].strip()
+    ]
+    return [(number, page, text) for number, (page, text) in enumerate(pieces, 1)]
+
+
+def require_public_document(connection, model, version):
+    """付费前与发布事务内检查三级核验；来源撤销不能被续传或缓存绕过。"""
     valid = one(
         connection,
         (
@@ -219,15 +230,18 @@ def publish_chunks(connection, model, version, pages, vectors):
     )
     if not valid:
         raise DomainError(409, "SOURCE_UNVERIFIED", "证据尚未通过公共发布核验")
-    chunks = [
-        (page, text[offset : offset + 2000])
-        for page, text in pages
-        for offset in range(0, len(text), 2000)
-        if text[offset : offset + 2000].strip()
-    ]
+
+
+def publish_chunks(connection, model, version, pages, vectors):
+    """完整发布入口保留给受控导入；Worker 使用相同核验边界分批提交。"""
+    publish_chunk_batch(connection, model, version, document_chunks(pages), vectors)
+
+
+def publish_chunk_batch(connection, model, version, chunks, vectors):
+    require_public_document(connection, model, version)
     if len(chunks) != len(vectors):
         raise ValueError("Embedding count mismatch")
-    for index, ((page, text), vector) in enumerate(zip(chunks, vectors, strict=True), 1):
+    for (index, page, text), vector in zip(chunks, vectors, strict=True):
         execute(
             connection,
             (
@@ -467,7 +481,7 @@ def parse_task(job):
 
 
 def embed_task(job):
-    """向量化采用同修订模型；不接受私有文档，发布仍由三级核验栅栏控制。"""
+    """每批最多十片，保留完成批次；长手册与失败重试不重复支付已核验向量。"""
     with transaction() as connection:
         document = task_document(connection, job)
         pages = [
@@ -478,18 +492,55 @@ def embed_task(job):
                 id=document["id"],
             )
         ]
-    texts = [
-        text[offset : offset + 2000]
-        for _, text in pages
-        for offset in range(0, len(text), 2000)
-        if text[offset : offset + 2000].strip()
-    ]
-    if len(texts) > 100:
-        raise DomainError(422, "VALIDATION_ERROR", "资料分片超出单次构建预算")
-    vectors = ModelGateway().embed(texts, f"build:{job['payload']['productModelId']}")
+        existing = {
+            row["chunk_no"]: row
+            for row in many(
+                connection,
+                "SELECT chunk_no,page_start,page_end,content,verification_status,"
+                "embedding IS NOT NULL AS has_embedding,embedding_model,embedding_revision "
+                "FROM knowledge_chunks WHERE document_version_id=:version "
+                "AND product_model_id=:model",
+                version=document["id"],
+                model=job["payload"]["productModelId"],
+            )
+        }
+    chunks = document_chunks(pages)
+    config = settings()
+    pending = []
+    for number, page, text in chunks:
+        cached = existing.get(number)
+        if cached and (
+            cached["page_start"] != page
+            or cached["page_end"] != page
+            or cached["content"] != text
+            or cached["verification_status"] != "verified"
+        ):
+            raise DomainError(409, "SOURCE_UNVERIFIED", "已发布分片与不可变资料不一致或已撤销")
+        if not cached or not (
+            cached["has_embedding"]
+            and cached["embedding_model"] == config.embedding_model
+            and cached["embedding_revision"] == config.embedding_revision
+        ):
+            pending.append((number, page, text))
+    if set(existing) - {number for number, _, _ in chunks}:
+        raise DomainError(409, "SOURCE_UNVERIFIED", "已发布分片不属于当前不可变资料")
+    model = {"id": job["payload"]["productModelId"]}
+    gateway = ModelGateway()
+    try:
+        for offset in range(0, len(pending), 10):
+            batch = pending[offset : offset + 10]
+            with transaction() as connection:
+                parent_fenced(connection, job)
+                require_public_document(connection, model, document)
+            # 仍由适配器逐批扣除正常每日额度，未增加预算；额度不足保留已完成批次。
+            vectors = gateway.embed([text for _, _, text in batch], f"build:{model['id']}")
+            with transaction() as connection:
+                parent_fenced(connection, job)
+                publish_chunk_batch(connection, model, document, batch, vectors)
+            progress(job, "embedding", int(100 * (offset + len(batch)) / len(pending)))
+    finally:
+        gateway.client.close()
     with transaction() as connection:
         parent_fenced(connection, job)
-        publish_chunks(
-            connection, {"id": job["payload"]["productModelId"]}, document, pages, vectors
-        )
+        require_public_document(connection, model, document)
         finish(connection, job)

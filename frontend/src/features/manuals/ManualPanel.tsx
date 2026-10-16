@@ -279,7 +279,7 @@ export function ManualPanel({ product }: { product: ProductInstance }) {
                 {current && (
                   <article>
                     <h3>{current.title}</h3>
-                    {current.reused && <p>沿用上一版本已核验章节。</p>}
+                    {current.reused && <p>沿用已核验章节。</p>}
                     {current.generationStatus !== 'ready' &&
                       !generating &&
                       !manual.inputsStale && (

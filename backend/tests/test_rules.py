@@ -2,12 +2,14 @@
 
 import io
 import socket
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from PIL import Image
 from pydantic import ValidationError
 
+from app import fetch
 from app.adapters import ModelGateway
 from app.config import Settings
 from app.errors import DomainError
@@ -76,6 +78,37 @@ def test_encrypted_dns_still_rejects_private_answers(monkeypatch):
     monkeypatch.setattr(httpx, "get", response)
     with pytest.raises(DomainError):
         public_addresses("https://manual.example.com/a", encrypted_public_dns)
+
+
+@pytest.mark.parametrize("provider", ["system", "cloudflare"])
+def test_public_address_check_uses_configured_resolver(monkeypatch, provider):
+    def system(*args, **kwargs):
+        assert provider == "system", "DoH模式不能回退到系统Fake-IP"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+
+    def encrypted(*args, **kwargs):
+        assert provider == "cloudflare"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("9.9.9.9", 443))]
+
+    monkeypatch.setattr(fetch, "settings", lambda: SimpleNamespace(fetch_dns_provider=provider))
+    monkeypatch.setattr(fetch.socket, "getaddrinfo", system)
+    monkeypatch.setattr(fetch, "encrypted_public_dns", encrypted)
+    _, addresses = public_addresses("https://manual.example.invalid/a", resolver=None)
+    assert addresses == ["9.9.9.9" if provider == "cloudflare" else "8.8.8.8"]
+
+
+def test_configured_encrypted_dns_rejects_mixed_private_answers(monkeypatch):
+    monkeypatch.setattr(fetch, "settings", lambda: SimpleNamespace(fetch_dns_provider="cloudflare"))
+    monkeypatch.setattr(
+        fetch,
+        "encrypted_public_dns",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))
+            for address in ("8.8.8.8", "127.0.0.1")
+        ],
+    )
+    with pytest.raises(DomainError):
+        public_addresses("https://manual.example.invalid/a", resolver=None)
 
 
 def test_model_region_hardware_exact_match():

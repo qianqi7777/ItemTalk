@@ -43,3 +43,43 @@ test('SSE 跨 UTF-8 和 CRLF 切片后仍正确解析，并查询持久化运行
   expect(run.status).toBe('completed');
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+
+test('流式草稿含多余引用时使用服务端最终核验消息', async () => {
+  const message = {
+    id: 'message',
+    role: 'assistant',
+    content: '关闭设备的说明[2]。',
+    citations: [{ rank: 2, pageStart: 25 }],
+  };
+  const source =
+    'event: status\ndata: {"runId":"run","status":"running"}\n\n' +
+    'event: token\ndata: {"text":"关闭设备的说明[1][2]。"}\n\n' +
+    'event: citation\ndata: {"rank":2,"pageStart":25}\n\n' +
+    'event: done\ndata: {"runId":"run","messageId":"message"}\n\n';
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(source, {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'run', status: 'completed', message })),
+    );
+  vi.stubGlobal('fetch', fetch);
+  const token = vi.fn();
+  const run = await streamAnswer(
+    'conversation',
+    '如何关闭？',
+    { token, status: vi.fn(), citation: vi.fn() },
+    new AbortController().signal,
+    'key',
+  );
+  expect(token).toHaveBeenCalledWith('关闭设备的说明[1][2]。');
+  expect(run.message).toEqual(message);
+  expect(run.message?.content).not.toContain('[1]');
+  expect(fetch).toHaveBeenLastCalledWith(
+    '/api/v1/conversations/conversation/runs/run',
+    expect.objectContaining({ credentials: 'include' }),
+  );
+});

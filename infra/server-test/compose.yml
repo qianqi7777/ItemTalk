@@ -1,0 +1,109 @@
+# 独立服务器测试栈；禁止与生产 Compose 合并，避免继承生产路径和端口。
+name: itemtalk-test
+
+x-runtime: &runtime
+  ENVIRONMENT: development
+  BUILD_VERSION: ${RELEASE_SHA:?Set exact source SHA}
+  DB_HOST: db
+  DB_PORT: '5432'
+  DB_NAME: itemtalk
+  JWT_SECRET: ${JWT_SECRET:?Set fresh test secret}
+  STORAGE_BACKEND: local
+  STORAGE_DIRECTORY: /app/.local-data/assets
+  AUTH_COOKIE_SECURE: 'false'
+  AUTH_COOKIE_PATH: /itemtalk/
+  PUBLIC_PATH_PREFIX: /itemtalk
+  APP_PUBLIC_URL: http://localhost:18400/itemtalk/
+  DAILY_MODEL_CALL_LIMIT: '53'
+  DAILY_GLOBAL_MODEL_CALL_LIMIT: '53'
+  UPSTREAM_MAX_ATTEMPTS: '1'
+
+x-app: &app
+  image: itemtalk-test-api:${RELEASE_SHA:?Set exact source SHA}
+  env_file: .env.providers
+  volumes:
+    - assets:/app/.local-data
+  networks: [test]
+  restart: 'no'
+
+services:
+  db:
+    # 复用服务器已有 pgvector 镜像的固定内容摘要，不拉取可变标签。
+    image: ${TEST_DB_IMAGE:?Set inspected existing database image ID}
+    environment:
+      POSTGRES_DB: itemtalk
+      POSTGRES_USER: itemtalk_admin
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?Set fresh test password}
+      APP_DB_PASSWORD: ${DB_PASSWORD:?Set fresh test password}
+      MIGRATION_DB_PASSWORD: ${DB_MIGRATION_PASSWORD:?Set fresh test password}
+      WORKER_DB_PASSWORD: ${DB_WORKER_PASSWORD:?Set fresh test password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+      - ../init-roles.sh:/docker-entrypoint-initdb.d/02-roles.sh:ro
+      - ../runtime-roles.sql:/docker-entrypoint-initdb.d/runtime-roles.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U itemtalk_admin -d itemtalk]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 384m
+    cpus: 0.5
+    networks: [test]
+    restart: 'no'
+  migration:
+    <<: *app
+    profiles: [setup]
+    environment:
+      <<: *runtime
+      DB_USER: itemtalk_migrator
+      DB_PASSWORD: ${DB_MIGRATION_PASSWORD:?Set fresh test password}
+    command: [alembic, upgrade, head]
+    mem_limit: 256m
+    depends_on:
+      db: {condition: service_healthy}
+  api:
+    <<: *app
+    environment:
+      <<: *runtime
+      DB_USER: itemtalk_app
+      DB_PASSWORD: ${DB_PASSWORD:?Set fresh test password}
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, '8000', --workers, '1', --no-access-log]
+    mem_limit: 384m
+    cpus: 0.5
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+  worker:
+    <<: *app
+    environment:
+      <<: *runtime
+      DB_USER: itemtalk_worker
+      DB_PASSWORD: ${DB_WORKER_PASSWORD:?Set fresh test password}
+    command: [python, -m, app.worker]
+    mem_limit: 512m
+    cpus: 0.5
+    depends_on:
+      api: {condition: service_healthy}
+  web:
+    image: itemtalk-test-frontend:${RELEASE_SHA:?Set exact source SHA}
+    ports: ['127.0.0.1:18400:8080']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    mem_limit: 64m
+    cpus: 0.25
+    networks: [test]
+    restart: 'no'
+    depends_on:
+      api: {condition: service_healthy}
+
+# Compose 项目专属卷和网络；没有生产宿主机目录、外部卷或公开监听。
+volumes:
+  pgdata:
+  assets:
+networks:
+  test:
