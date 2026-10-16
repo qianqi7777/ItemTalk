@@ -1956,3 +1956,22 @@ a:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chat-attachments img {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.chat-photo-draft {
+  margin: 12px 0;
+}

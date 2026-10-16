@@ -2,6 +2,32 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { streamAnswer } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
+
+test('纯图片SSE请求省略空文字并携带原附件及重试运行', async () => {
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response('event: done\ndata: {"runId":"retried"}\n\n', {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'retried', status: 'completed' })),
+    );
+  vi.stubGlobal('fetch', fetch);
+  await streamAnswer(
+    'conversation',
+    '',
+    { token: vi.fn(), status: vi.fn(), citation: vi.fn() },
+    new AbortController().signal,
+    'key',
+    'old-run',
+    ['confirmed-image'],
+  );
+  const options = fetch.mock.calls[0][1];
+  expect(JSON.parse(options.body)).toEqual({ assetIds: ['confirmed-image'] });
+  expect(options.headers['Retry-Of']).toBe('old-run');
+});
 test('SSE 跨 UTF-8 和 CRLF 切片后仍正确解析，并查询持久化运行', async () => {
   const source =
     'event: status\r\ndata: {"runId":"run","status":"running"}\r\n\r\n' +

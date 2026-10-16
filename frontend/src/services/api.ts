@@ -88,6 +88,7 @@ export async function streamAnswer(
   signal: AbortSignal,
   key: string,
   retry?: string,
+  assetIds: string[] = [],
 ): Promise<Run> {
   const response = await fetch(
     `${apiBase}/conversations/${conversationId}/stream`,
@@ -101,7 +102,11 @@ export async function streamAnswer(
         'Idempotency-Key': key,
         ...(retry ? { 'Retry-Of': retry } : {}),
       },
-      body: JSON.stringify({ content }),
+      // 纯附件请求必须省略空文字，不能触发服务端的空白输入校验。
+      body: JSON.stringify({
+        ...(content.trim() ? { content } : {}),
+        ...(assetIds.length ? { assetIds } : {}),
+      }),
     },
   );
   if (!response.ok) {

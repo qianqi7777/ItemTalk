@@ -64,6 +64,33 @@ def test_dangerous_text_does_not_read_or_identify_attached_photo(client, monkeyp
     assert "安全风险" in answer["content"] and answer["citations"] == []
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_image_without_question_asks_for_intent_before_any_provider_call(
+    client, monkeypatch, stream
+):
+    register_login(client)
+    product = ready_product(client)
+    photo = feedback_image(client)
+    conversation = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("An image without a question cannot invent an operation or verified citation")
+
+    monkeypatch.setattr(Storage, "read", forbidden)
+    for method in ("identify", "embed", "answer", "answer_stream", "assess_answer"):
+        monkeypatch.setattr(ModelGateway, method, forbidden)
+    endpoint = "stream" if stream else "messages"
+    response = post(
+        client, f"/conversations/{conversation['id']}/{endpoint}", {"assetIds": [photo]}
+    )
+    assert response.status_code == (200 if stream else 201)
+    messages = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()["items"]
+    assert messages[0]["content"] is None
+    assert messages[0]["assets"][0]["id"] == photo
+    assert messages[-1]["content"] == "图片已收到。请补充您想了解的问题，例如充电方法或指示灯异常。"
+    assert messages[-1]["citations"] == []
+
+
 @pytest.mark.parametrize(
     "body,expected",
     [

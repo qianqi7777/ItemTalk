@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Spin } from 'antd';
+import { Alert, Button, Input, Spin, Upload } from 'antd';
 import {
   ArrowUp,
   Square,
@@ -7,8 +7,9 @@ import {
   Sparkles,
   ShieldCheck,
   ArrowUpRight,
+  ImagePlus,
 } from 'lucide-react';
-import { api, newKey, post, streamAnswer } from '../services/api';
+import { api, newKey, post, streamAnswer, upload } from '../services/api';
 import { CitationCard } from '../components/CitationCard';
 import { MessageContent } from '../components/MessageContent';
 import type {
@@ -18,10 +19,41 @@ import type {
   MessagePage,
   ProductInstance,
   Run,
+  Asset,
 } from '../types/api';
 import { MessageFeedback } from '../features/feedback/MessageFeedback';
 import { SpeechInput } from '../features/speech/SpeechInput';
 import { DeleteAction } from '../components/DeleteAction';
+
+type QuestionDraft = { content: string; assets: Asset[] };
+
+function QuestionImages({ assets }: { assets: Asset[] }) {
+  return (
+    <div className="chat-attachments">
+      {assets
+        .filter((asset) => asset.mimeType.startsWith('image/'))
+        .map((asset, index) =>
+          asset.readUrl ? (
+            <a
+              key={asset.id}
+              href={asset.readUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <img
+                src={asset.readUrl}
+                alt={`提问图片 ${index + 1}`}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            </a>
+          ) : (
+            <span key={asset.id}>提问图片 {index + 1}</span>
+          ),
+        )}
+    </div>
+  );
+}
 
 export function ChatPanel({
   product,
@@ -34,6 +66,10 @@ export function ChatPanel({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [photos, setPhotos] = useState<Asset[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const uploadPending = useRef(false);
+  const mounted = useRef(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<Conversation[]>([]);
   const [historyQuery, setHistoryQuery] = useState('');
@@ -41,12 +77,12 @@ export function ChatPanel({
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [messageCursor, setMessageCursor] = useState<string | null>(null);
   useEffect(() => {
-    onBusyChange?.(busy || loadingHistory);
-  }, [busy, loadingHistory, onBusyChange]);
+    onBusyChange?.(busy || loadingHistory || uploading);
+  }, [busy, loadingHistory, uploading, onBusyChange]);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
-  const [retryInput, setRetryInput] = useState('');
+  const [retryDraft, setRetryDraft] = useState<QuestionDraft>();
   const [speechEnabled, setSpeechEnabled] = useState(false);
   useEffect(() => {
     void api<{ speechToText: boolean }>('/capabilities')
@@ -60,9 +96,48 @@ export function ChatPanel({
     if (messages.length || draft)
       end.current?.scrollIntoView?.({ behavior: 'smooth' });
   }, [messages, draft]);
-  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      controller.current?.abort();
+    };
+  }, []);
+
+  const attachPhoto = async (file: File) => {
+    // 上传期间禁止产品/会话切换；组件卸载后不接收旧上传的迟到结果。
+    if (uploadPending.current || busy || loadingHistory) return;
+    if (photos.length >= 10) {
+      setError('每条问题最多附带 10 张图片');
+      return;
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setError('请选择 JPEG、PNG 或 WebP 图片');
+      return;
+    }
+    if (!file.size || file.size > 10 * 1024 * 1024) {
+      setError('图片大小须在 1 字节至 10 MB 之间');
+      return;
+    }
+    uploadPending.current = true;
+    setUploading(true);
+    setError('');
+    try {
+      const asset = await upload(file);
+      if (mounted.current) setPhotos((old) => [...old, asset]);
+    } catch (error) {
+      if (mounted.current)
+        setError(
+          error instanceof Error ? error.message : '图片上传失败，请重试',
+        );
+    } finally {
+      uploadPending.current = false;
+      if (mounted.current) setUploading(false);
+    }
+  };
 
   const loadHistory = async (append = false) => {
+    if (uploadPending.current) return;
     setLoadingHistory(true);
     try {
       const page = await api<{
@@ -82,6 +157,7 @@ export function ChatPanel({
     }
   };
   const chooseConversation = async (id: string) => {
+    if (uploadPending.current) return;
     // 恢复服务端会话ID与消息页，继续提问时沿用原会话，避免历史断成两段。
     setLoadingHistory(true);
     setError('');
@@ -91,7 +167,8 @@ export function ChatPanel({
       setMessages(page.items);
       setMessageCursor(page.nextCursor);
       setRunId('');
-      setRetryInput('');
+      setRetryDraft(undefined);
+      setPhotos([]);
       setHistoryOpen(false);
     } catch (error) {
       setError(error instanceof Error ? error.message : '会话恢复失败');
@@ -114,13 +191,24 @@ export function ChatPanel({
     }
   };
 
-  const send = async (question = input, retry = false) => {
-    if (!question.trim() || busy || loadingHistory) return;
+  const send = async (question = input, retry = false, assets = photos) => {
+    if (
+      (!question.trim() && !assets.length) ||
+      busy ||
+      loadingHistory ||
+      uploadPending.current
+    )
+      return;
+    const sent: QuestionDraft = { content: question, assets: [...assets] };
     setBusy(true);
     setError('');
     setDraft('');
     setCitations([]);
-    setInput('');
+    if (!retry) {
+      setInput('');
+      setPhotos([]);
+      setRetryDraft(undefined);
+    }
     const previous = retry ? runId : undefined;
     if (!retry) setRunId('');
     try {
@@ -136,7 +224,13 @@ export function ChatPanel({
       if (!retry)
         setMessages((current) => [
           ...current,
-          { id: newKey(), role: 'user', content: question, citations: [] },
+          {
+            id: newKey(),
+            role: 'user',
+            content: question,
+            citations: [],
+            assets,
+          },
         ]);
       const run = await streamAnswer(
         id,
@@ -152,10 +246,13 @@ export function ChatPanel({
         controller.current.signal,
         newKey(),
         previous,
+        assets.map((asset) => asset.id),
       );
-      if (run.message) setMessages((current) => [...current, run.message!]);
-      else if (run.status !== 'completed') {
-        setRetryInput(question);
+      if (run.message) {
+        setMessages((current) => [...current, run.message!]);
+        setRetryDraft(undefined);
+      } else if (run.status !== 'completed') {
+        setRetryDraft(sent);
         setError(
           `回答${run.status === 'cancelled' ? '已停止' : '中断'}，可以重试。`,
         );
@@ -166,7 +263,7 @@ export function ChatPanel({
           ? error.message
           : '回答已停止或连接中断',
       );
-      setRetryInput(question);
+      setRetryDraft(sent);
     } finally {
       setBusy(false);
       setDraft('');
@@ -192,6 +289,7 @@ export function ChatPanel({
           run.message!,
         ]);
         setError('');
+        setRetryDraft(undefined);
       } else setError(run.lastError || `当前回答状态：${run.status}`);
     } catch (error) {
       setError(error instanceof Error ? error.message : '查询失败');
@@ -218,14 +316,15 @@ export function ChatPanel({
             path={`/conversations/${conversation}`}
             label="删除会话"
             explanation="当前会话、反馈和由它产生的记忆将删除。仍被其他内容引用的照片会保留。"
-            disabled={busy || loadingHistory}
+            disabled={busy || loadingHistory || uploading}
             onBusyChange={setBusy}
             onDeleted={() => {
               setConversation('');
               setMessages([]);
               setMessageCursor(null);
               setRunId('');
-              setRetryInput('');
+              setRetryDraft(undefined);
+              setPhotos([]);
               setHistory((old) =>
                 old.filter((item) => item.id !== conversation),
               );
@@ -236,7 +335,7 @@ export function ChatPanel({
           />
         )}
         <Button
-          disabled={busy || loadingHistory}
+          disabled={busy || loadingHistory || uploading}
           onClick={() => {
             setHistoryOpen(!historyOpen);
             if (!historyOpen) void loadHistory();
@@ -245,13 +344,14 @@ export function ChatPanel({
           历史会话
         </Button>
         <Button
-          disabled={busy || loadingHistory}
+          disabled={busy || loadingHistory || uploading}
           onClick={() => {
             setConversation('');
             setMessages([]);
             setMessageCursor(null);
             setRunId('');
-            setRetryInput('');
+            setRetryDraft(undefined);
+            setPhotos([]);
             setError('');
             setHistoryOpen(false);
           }}
@@ -273,7 +373,11 @@ export function ChatPanel({
               onChange={(event) => setHistoryQuery(event.target.value)}
               placeholder="搜索标题或问题"
             />
-            <Button htmlType="submit" disabled={busy} loading={loadingHistory}>
+            <Button
+              htmlType="submit"
+              disabled={busy || uploading}
+              loading={loadingHistory}
+            >
               搜索
             </Button>
           </form>
@@ -281,7 +385,7 @@ export function ChatPanel({
           {history.map((item) => (
             <Button
               key={item.id}
-              disabled={busy || loadingHistory}
+              disabled={busy || loadingHistory || uploading}
               onClick={() => void chooseConversation(item.id)}
             >
               {item.title || '未命名会话'}
@@ -289,7 +393,7 @@ export function ChatPanel({
           ))}
           {historyCursor && (
             <Button
-              disabled={busy}
+              disabled={busy || uploading}
               loading={loadingHistory}
               onClick={() => void loadHistory(true)}
             >
@@ -301,7 +405,7 @@ export function ChatPanel({
       <div className="messages" aria-live="polite">
         {messageCursor && (
           <Button
-            disabled={busy}
+            disabled={busy || uploading}
             loading={loadingHistory}
             onClick={() => void loadOlder()}
           >
@@ -340,7 +444,10 @@ export function ChatPanel({
               {message.role === 'user' ? '你' : '识物说'}
             </span>
             {message.role === 'user' ? (
-              <p>{message.content}</p>
+              <>
+                {message.content && <p>{message.content}</p>}
+                <QuestionImages assets={message.assets || []} />
+              </>
             ) : (
               <MessageContent
                 content={message.content || ''}
@@ -397,10 +504,14 @@ export function ChatPanel({
                   查询结果
                 </Button>
               )}
-              {retryInput && (
+              {retryDraft && (
                 <Button
                   size="small"
-                  onClick={() => void send(retryInput, !!runId)}
+                  aria-label="重试回答"
+                  disabled={busy || uploading || loadingHistory}
+                  onClick={() =>
+                    void send(retryDraft.content, !!runId, retryDraft.assets)
+                  }
                 >
                   重试
                 </Button>
@@ -416,6 +527,46 @@ export function ChatPanel({
           }
         />
       )}
+      <div className="chat-photo-draft">
+        <Upload
+          accept="image/jpeg,image/png,image/webp"
+          showUploadList={false}
+          disabled={busy || loadingHistory || uploading || photos.length >= 10}
+          beforeUpload={(file) => {
+            void attachPhoto(file);
+            return false;
+          }}
+        >
+          <Button
+            aria-label="添加提问图片"
+            icon={<ImagePlus size={16} aria-hidden="true" />}
+            loading={uploading}
+            disabled={
+              busy || loadingHistory || uploading || photos.length >= 10
+            }
+          >
+            添加图片
+          </Button>
+        </Upload>
+        {!!photos.length && (
+          <div aria-label="待发送图片" aria-live="polite">
+            <QuestionImages assets={photos} />
+            {photos.map((photo, index) => (
+              <Button
+                key={photo.id}
+                size="small"
+                disabled={busy || uploading}
+                aria-label={`移除提问图片 ${index + 1}`}
+                onClick={() =>
+                  setPhotos((old) => old.filter((item) => item.id !== photo.id))
+                }
+              >
+                移除图片 {index + 1}
+              </Button>
+            ))}
+          </div>
+        )}
+      </div>
       <form
         className="chat-composer"
         onSubmit={(event) => {
@@ -430,7 +581,7 @@ export function ChatPanel({
           onChange={(event) => setInput(event.target.value)}
           autoSize={{ minRows: 2, maxRows: 5 }}
           maxLength={10000}
-          disabled={busy || loadingHistory}
+          disabled={busy || loadingHistory || uploading}
         />
         {busy ? (
           <Button
@@ -445,7 +596,9 @@ export function ChatPanel({
             aria-label="发送问题"
             type="primary"
             htmlType="submit"
-            disabled={!input.trim() || loadingHistory}
+            disabled={
+              (!input.trim() && !photos.length) || loadingHistory || uploading
+            }
             icon={<ArrowUp size={18} />}
           >
             发送
