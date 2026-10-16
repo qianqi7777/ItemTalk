@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app.adapters import ModelGateway
 from app.config import Settings
 from app.errors import DomainError
-from app.grounding import AnswerSupport, grounded_answer
+from app.grounding import AnswerSupport, grounded_answer, quote_options, resolve_choices
 
 EVIDENCE = [
     {"rank": 1, "content": "打开设备：按住电源2秒，直到蓝灯闪烁。"},
@@ -20,6 +20,13 @@ ASSESSMENT = {
     "citations": [
         {"rank": 1, "supported": False, "quote": ""},
         {"rank": 2, "supported": True, "quote": "关闭设备：按住电源2秒，直到蓝灯熄灭。"},
+    ],
+}
+CHOICES = {
+    "fullySupported": True,
+    "citations": [
+        {"rank": 1, "supported": False, "quoteIndex": None},
+        {"rank": 2, "supported": True, "quoteIndex": 1},
     ],
 }
 
@@ -99,7 +106,7 @@ def test_verifier_real_payload_is_bounded_and_contains_only_supplied_context(mon
     def respond(request):
         requests.append(json.loads(request.content))
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": json.dumps(ASSESSMENT)}}]}
+            200, json={"choices": [{"message": {"content": json.dumps(CHOICES)}}]}
         )
 
     gateway = ModelGateway(httpx.Client(transport=httpx.MockTransport(respond)))
@@ -115,6 +122,36 @@ def test_verifier_real_payload_is_bounded_and_contains_only_supplied_context(mon
     assert user == {
         "question": "如何关闭？",
         "answer": "按住2秒[1][2]",
-        "evidence": EVIDENCE,
+        "evidence": quote_options(EVIDENCE),
         "userMemory": [],
     }
+    assert result.model_dump() == ASSESSMENT
+
+
+def test_original_quote_windows_cover_whole_chunk_without_model_rewriting():
+    content = "零一二三四五六七八九" * 200
+    options = quote_options([{"rank": 2, "content": content}])
+    assert len(options[0]["quotes"]) == 7
+    assert all(len(row["text"]) <= 400 for row in options[0]["quotes"])
+    result = resolve_choices(
+        {"fullySupported": True, "citations": [{"rank": 2, "supported": True, "quoteIndex": 7}]},
+        options,
+    )
+    assert result.citations[0].quote == content[1800:]
+    assert grounded_answer("事实[2]", [{"rank": 2, "content": content}], result) == ("事实[2]", {2})
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        {"rank": 2, "supported": True, "quoteIndex": None},
+        {"rank": 2, "supported": True, "quoteIndex": 2},
+        {"rank": 3, "supported": True, "quoteIndex": 1},
+        {"rank": 1, "supported": False, "quoteIndex": 1},
+        {"rank": 2, "supported": True, "quoteIndex": "1"},
+        {"rank": 2, "supported": True, "quoteIndex": True},
+    ],
+)
+def test_invalid_quote_choice_cannot_select_or_invent_source_text(choice):
+    with pytest.raises(ValueError):
+        resolve_choices({"fullySupported": True, "citations": [choice]}, quote_options(EVIDENCE))

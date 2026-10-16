@@ -27,6 +27,59 @@ class AnswerSupport(StrictModel):
         return self
 
 
+class CitationChoice(StrictModel):
+    rank: StrictInt = Field(ge=1, le=10)
+    supported: StrictBool
+    quoteIndex: StrictInt | None = Field(default=None, ge=1, le=10)
+
+
+class SupportChoices(StrictModel):
+    fullySupported: StrictBool
+    citations: list[CitationChoice] = Field(min_length=1, max_length=10)
+
+
+def quote_options(evidence):
+    """原文窗口覆盖整个片段并重叠100字；模型只选编号，不能自由改写摘录。"""
+    result = []
+    for row in evidence:
+        content = row["content"]
+        if not content or len(content) > 2000:
+            raise ValueError("Invalid verification evidence size")
+        result.append(
+            {
+                "rank": row["rank"],
+                "quotes": [
+                    {"quoteIndex": number, "text": content[offset : offset + 400]}
+                    for number, offset in enumerate(range(0, len(content), 300), 1)
+                ],
+            }
+        )
+    return result
+
+
+def resolve_choices(choices, options):
+    """只能取当前引用自己的原文窗口；越界、跨片段、真假字符串继续失败关闭。"""
+    choices = SupportChoices.model_validate(choices)
+    by_rank = {
+        row["rank"]: {quote["quoteIndex"]: quote["text"] for quote in row["quotes"]}
+        for row in options
+    }
+    resolved = []
+    for row in choices.citations:
+        if row.rank not in by_rank:
+            raise ValueError("Unknown citation rank")
+        if row.supported:
+            if row.quoteIndex not in by_rank[row.rank]:
+                raise ValueError("Unknown source quote index")
+            quote = by_rank[row.rank][row.quoteIndex]
+        else:
+            if row.quoteIndex is not None:
+                raise ValueError("Unsupported citation cannot select a quote")
+            quote = ""
+        resolved.append(CitationSupport(rank=row.rank, supported=row.supported, quote=quote))
+    return AnswerSupport(fullySupported=choices.fullySupported, citations=resolved)
+
+
 def compact(value):
     return re.sub(r"\s+", "", normalize(value))
 
