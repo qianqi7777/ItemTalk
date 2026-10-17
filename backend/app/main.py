@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
+from app import operations
 from app.config import settings
 from app.db import actor, execute, json_value, many, one, transaction, validate_runtime
 from app.errors import DomainError, missing
@@ -153,7 +154,63 @@ def health():
 
 @app.get("/api/v1/capabilities")
 def capabilities(current=Depends(user)):
-    return {"speechToText": asr_enabled(), "recordingMaxSeconds": 60}
+    with transaction() as connection:
+        admin = operations.is_admin(connection)
+    return {"speechToText": asr_enabled(), "recordingMaxSeconds": 60, "adminConsole": admin}
+
+
+@app.get("/api/v1/admin/overview")
+def admin_overview(days: int = Query(default=1, ge=1, le=30), current=Depends(user)):
+    with transaction() as connection:
+        return operations.overview(connection, days)
+
+
+@app.get("/api/v1/admin/metrics")
+def admin_metrics(days: int = Query(default=1, ge=1, le=30), current=Depends(user)):
+    with transaction() as connection:
+        return {"groups": operations.metrics(connection, days)}
+
+
+@app.get("/api/v1/admin/runtime-config")
+def admin_runtime(current=Depends(user)):
+    with transaction() as connection:
+        operations.require_admin(connection)
+        return operations.runtime(connection)
+
+
+@app.patch("/api/v1/admin/runtime-config")
+def admin_update(
+    request: operations.RuntimeUpdate,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+):
+    with transaction() as connection:
+        operations.require_admin(connection)
+        body = request.model_dump()
+        previous = idempotent(connection, current["id"], "admin/runtime-config", key, body)
+        if previous:
+            return previous["response_snapshot"]
+        result = operations.update_runtime(connection, request)
+        remember(
+            connection, current["id"], "admin/runtime-config", key, body, current["id"], result, 200
+        )
+        return result
+
+
+@app.get("/api/v1/admin/audit")
+def admin_audit(before: int | None = Query(default=None, ge=1), current=Depends(user)):
+    from app.db import many
+
+    with transaction() as connection:
+        operations.require_admin(connection)
+        rows = many(
+            connection,
+            "SELECT id,version,before_value,after_value,created_at "
+            "FROM runtime_config_audit WHERE (CAST(:b AS bigint) IS NULL OR id<:b) "
+            "ORDER BY id DESC LIMIT 50",
+            b=before,
+        )
+        return {"items": rows, "nextBefore": rows[-1]["id"] if len(rows) == 50 else None}
 
 
 @app.post("/api/v1/assets/{asset_id}/transcribe")
@@ -953,3 +1010,7 @@ def cancel_run(conversation_id: UUID, run_id: UUID, current=Depends(user)):
         return chat.run_view(
             connection, chat.get_run(connection, conversation_id, run_id, current["id"])
         )
+
+
+# 最外层观测包括认证/限流失败，SSE正文消费完毕才结算完整耗时。
+app.add_middleware(operations.MetricsMiddleware)

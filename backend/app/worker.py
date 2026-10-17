@@ -105,7 +105,21 @@ def run_once(requested_id=None):
             raise DomainError(422, "VALIDATION_ERROR", "任务类型未启用")
         # 领取入口只能返回一个已加租约的任务；私有处理始终切换为该任务本人。
         cleanup_job = job["job_type"] in {"user_cleanup", "asset_cleanup", "checkpoint_cleanup"}
-        with actor(job["user_id"], allow_deleted=cleanup_job), LeaseHeartbeat(job):
+        from datetime import UTC, datetime
+
+        from app.operations import metric, snapshot
+
+        metric(
+            "queue",
+            job["job_type"],
+            "claimed",
+            max(0, (datetime.now(UTC) - job["available_at"]).total_seconds() * 1000),
+        )
+        with (
+            actor(job["user_id"], allow_deleted=cleanup_job),
+            LeaseHeartbeat(job),
+            snapshot(job.get("runtime_snapshot")),
+        ):
             handler(job)
     except Exception as error:
         # 不记录上游正文、用户原始输入和密钥；对外只保留受控错误文案。
@@ -164,6 +178,9 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     while not stopped:
+        if settings().v2_enabled:
+            with transaction() as connection:
+                execute(connection, "SELECT itemtalk_ops_cleanup()")
         if not run_once():
             time.sleep(settings().worker_poll_seconds)
 

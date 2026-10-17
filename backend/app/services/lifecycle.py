@@ -16,6 +16,7 @@ def queue_cleanup(connection, user, scope, resource, asset_ids):
 
 
 def account(connection, user):
+    execute(connection, "DELETE FROM query_embedding_cache WHERE user_id=:u", u=user)
     row = one(connection, "SELECT * FROM users WHERE id=:u FOR UPDATE", u=user)
     if not row or row["status"] != "active" or row["deleted_at"]:
         missing()
