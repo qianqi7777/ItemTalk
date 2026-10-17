@@ -475,6 +475,10 @@ class ModelGateway:
                         "不得增加未输入编号。只输出JSON："
                         '{"fullySupported":true,"citations":[{"rank":1,'
                         '"supported":true,"quoteIndex":1}]}。'
+                        "完全不支持时也必须返回每个输入rank，例如："
+                        '{"fullySupported":false,"citations":[{"rank":1,'
+                        '"supported":false,"quoteIndex":null}]}。'
+                        "不支持的引用不得用0替代null，不得返回空citations数组。"
                     ),
                 },
                 {

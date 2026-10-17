@@ -21,8 +21,16 @@ class PriceRate(BaseModel):
     model: str
     effective_from: date
     currency: Literal["CNY", "USD"] = "CNY"
-    input_per_million: Decimal = Field(ge=0)
-    output_per_million: Decimal = Field(ge=0)
+    input_per_million: Decimal = Field(ge=0, le=1000000, allow_inf_nan=False)
+    output_per_million: Decimal = Field(ge=0, le=1000000, allow_inf_nan=False)
+    min_input_tokens: int = Field(default=0, ge=0)
+    max_input_tokens: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def valid_range(self):
+        if self.max_input_tokens is not None and self.max_input_tokens < self.min_input_tokens:
+            raise ValueError("Invalid input-token pricing range")
+        return self
 
 
 class Settings(BaseSettings):

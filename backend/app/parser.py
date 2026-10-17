@@ -26,7 +26,8 @@ def _parse(data, mime):
             # 解密后仍为True。只尝试空密码，真正需密码或不支持的加密仍拒绝。
             if reader.is_encrypted and not reader.decrypt(""):
                 raise ValueError("Password-protected PDF")
-            if len(reader.pages) > 200:
+            # EOS 550D官方中文手册260页；保留CPU/内存/总文本上限，仅扩展有界页数。
+            if len(reader.pages) > 400:
                 raise ValueError("Unsupported PDF")
             pages = [
                 (index, (page.extract_text() or "")[:40000])

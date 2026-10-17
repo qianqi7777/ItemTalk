@@ -84,6 +84,29 @@ def compact(value):
     return re.sub(r"\s+", "", normalize(value))
 
 
+def evidence_insufficient(answer):
+    """识别开头的资料不足声明，不能让后接的无关FAQ引用冒充问题证据。
+
+    只看第一句的元资料声明；“不支持5GHz”等有依据的设备否定事实不在此列。
+    """
+    lead = re.sub(r"^[*#>_-]+", "", compact(answer))[:300]
+    if re.match(r"(?:(?:目前|当前|现有)(?:已核验)?的?)?(?:资料|证据)不足", lead):
+        return True
+    first = re.split(r"[。！？!?]", lead, maxsplit=1)[0]
+    return bool(
+        re.match(
+            r"(?:根据|基于).{0,40}(?:证据|资料|文档)[，,:：]*(?:目前|当前|我们|我|还)?"
+            r"(?:无法|不能)(?:直接|准确|实时)?(?:回答|确认|确定|得知|获知|判断)",
+            first,
+        )
+        or re.match(
+            r"(?:(?:现有|当前|目前)的?)?(?:证据|资料|文档)(?:中)?"
+            r"(?:未|没有)(?:包含|提供|说明|提及)",
+            first,
+        )
+    )
+
+
 def grounded_answer(answer, evidence, assessment):
     """只删除原有引用，不新增编号或改写事实；摘录不能替代模型判断的语义充分性。"""
     assessment = AnswerSupport.model_validate(assessment)

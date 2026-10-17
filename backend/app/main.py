@@ -62,6 +62,7 @@ HEARTBEAT_SQL = "UPDATE assistant_runs SET heartbeat_at=now() WHERE id=:id AND s
 
 @app.exception_handler(DomainError)
 async def domain_error(_request, error):
+    _request.scope["v2_error_code"] = error.code
     headers = {"Retry-After": "60"} if error.status == 429 else None
     return JSONResponse(error.body(), status_code=error.status, headers=headers)
 
@@ -70,12 +71,14 @@ async def domain_error(_request, error):
 async def validation_error(_request, _error):
     # Pydantic 的 input 可能含密码，禁止直接返回或记录其异常详情。
     error = DomainError(422, "VALIDATION_ERROR", "输入格式无效，请检查字段内容")
+    _request.scope["v2_error_code"] = error.code
     return JSONResponse(error.body(), status_code=422)
 
 
 @app.exception_handler(IntegrityError)
 async def integrity_error(_request, _error):
     error = DomainError(409, "RESOURCE_CONFLICT", "资源状态冲突，请刷新后重试")
+    _request.scope["v2_error_code"] = error.code
     return JSONResponse(error.body(), status_code=409)
 
 
@@ -114,8 +117,10 @@ async def guard_writes(request, call_next):
         with actor(identity):
             return await call_next(request)
     except DomainError as error:
+        request.scope["v2_error_code"] = error.code
         return JSONResponse(error.body(), status_code=error.status)
     except Exception as error:
+        request.scope["v2_error_code"] = "INTERNAL_ERROR"
         # 捕获传输层未预期故障，避免框架默认堆栈包含上游响应或用户参数。
         logger.error("HTTP failure: error_type=%s", type(error).__name__)
         failure = DomainError(500, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试")
@@ -914,6 +919,7 @@ def event(kind, value):
 def stream(
     conversation_id: UUID,
     body: MessageRequest,
+    request: Request,
     current=Depends(user),
     key: str = Header(alias="Idempotency-Key"),
     retry: UUID | None = Header(default=None, alias="Retry-Of"),
@@ -964,10 +970,13 @@ def stream(
                     yield event("citation", citation)
                 yield event("done", {"runId": str(run["id"]), "messageId": message["id"]})
             else:
+                request.scope["v2_error_code"] = result["status"]
                 yield event("status", {"runId": str(run["id"]), "status": result["status"]})
         except DomainError as error:
+            request.scope["v2_error_code"] = error.code
             yield event("error", {**error.body(), "runId": str(run["id"])})
         except asyncio.CancelledError:
+            request.scope["v2_error_code"] = "interrupted"
             # 后台外部调用可能仍返回；状态栅栏会阻止其覆盖 interrupted。
             with transaction() as connection:
                 execute(

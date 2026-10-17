@@ -49,5 +49,5 @@ def test_password_protected_pdf_is_still_rejected():
 
 def test_readable_encryption_does_not_bypass_page_limit():
     with pytest.raises(DomainError) as error:
-        parse_document(pdf_bytes("", "publisher-only", pages=201), "application/pdf")
+        parse_document(pdf_bytes("", "publisher-only", pages=401), "application/pdf")
     assert error.value.code == "SOURCE_UNVERIFIED"

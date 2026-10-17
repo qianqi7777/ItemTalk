@@ -7,7 +7,7 @@ from app.adapters import ModelGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError, missing
-from app.grounding import grounded_answer
+from app.grounding import evidence_insufficient, grounded_answer
 from app.safety import risk_of
 from app.security import digest, normalize
 from app.services.products import owned, require_assets
@@ -243,7 +243,8 @@ def _retrieve(model_id, question, vector, limit=10):
             connection,
             (
                 "WITH eligible AS ( SELECT "
-                "k.*,v.version_label,v.verified_at,d.title,s.url, "
+                # 排名阶段只携带ID和分数，避免把正文及1024维向量重复写入排序临时文件。
+                "k.id, "
                 "k.embedding <=> CAST(:vector AS vector) AS vector_distance, "
                 "word_similarity(:question,k.content) AS text_score FROM "
                 "knowledge_chunks k JOIN product_models m ON m.id=k.product_model_id "
@@ -261,9 +262,18 @@ def _retrieve(model_id, question, vector, limit=10):
                 "row_number() OVER(ORDER BY text_score DESC,id) AS text_rank FROM eligible) "
                 # 长手册重复注意事项容易占满词法排名；保留两个最相关语义候选，
                 # 其余名额仍由融合分数选择，不能绕过上面的逐层来源核验。
-                "SELECT * FROM ranked ORDER BY CASE WHEN vector_rank<=:semantic_reserve "
+                ", selected AS (SELECT * FROM ranked ORDER BY "
+                "CASE WHEN vector_rank<=:semantic_reserve "
                 "THEN 0 ELSE 1 END,(1.0/(60+vector_rank)+CASE WHEN text_score>0 "
-                "THEN 1.0/(60+text_rank) ELSE 0 END) DESC,id LIMIT :limit"
+                "THEN 1.0/(60+text_rank) ELSE 0 END) DESC,id LIMIT :limit) "
+                "SELECT k.*,v.version_label,v.verified_at,d.title,s.url,"
+                "r.vector_distance,r.text_score,r.vector_rank,r.text_rank FROM selected r "
+                "JOIN knowledge_chunks k ON k.id=r.id "
+                "JOIN document_versions v ON v.id=k.document_version_id "
+                "JOIN documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id "
+                "ORDER BY CASE WHEN r.vector_rank<=:semantic_reserve THEN 0 ELSE 1 END,"
+                "(1.0/(60+r.vector_rank)+CASE WHEN r.text_score>0 "
+                "THEN 1.0/(60+r.text_rank) ELSE 0 END) DESC,r.id"
             ),
             vector=json_value(vector),
             question=query,
@@ -331,7 +341,14 @@ def complete_run(run, on_token=None):
     from app.operations import snapshot
 
     with snapshot(run.get("runtime_snapshot")):
-        return _complete_run(run, on_token)
+        result = _complete_run(run, on_token)
+    # 供应商流式增量可能最终被引用核验删除/替换。只在事务提交后发送最终正文，
+    # 避免SSE暂时展示无依据内容，或与刷新后的持久化回答不一致。
+    if on_token and result.get("message"):
+        content = result["message"]["content"]
+        for offset in range(0, len(content), 64):
+            on_token(content[offset : offset + 64])
+    return result
 
 
 def _complete_run(run, on_token=None):
@@ -414,7 +431,6 @@ def _complete_run(run, on_token=None):
                             if not current or current["status"] != "running":
                                 raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
                         pieces.append(piece)
-                        on_token(piece)
                     answer = "".join(pieces)
                 else:
                     answer = gateway.answer(
@@ -424,10 +440,7 @@ def _complete_run(run, on_token=None):
                 # 不让不可信模型输出的超长数字触发 int 上限或引用无关的真实片段。
                 cited = {int(number) for number in ranks if len(number) <= 4}
                 # “未提及”不能借真实片段变成有证据的否定结论；明确不足时丢弃附会引用。
-                insufficient = re.match(
-                    r"^(?:[*#>]+\s*)?(?:(?:目前|当前|现有)(?:已核验)?的?)?(?:资料|证据)不足",
-                    normalize(answer),
-                )
+                insufficient = evidence_insufficient(answer)
                 if not ranks or insufficient:
                     answer, citations = (
                         "现有已核验资料不足以支持这次回答。请补充更具体的问题或相关官方资料。",

@@ -1,5 +1,6 @@
 """V2运维边界：只接收受控指标，不保存用户输入、供应商正文或凭据。"""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -14,7 +15,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
-from app.db import actor_id, execute, json_value, many, one, transaction
+from app.db import actor, actor_id, execute, json_value, many, one, transaction
 from app.errors import DomainError
 
 log = logging.getLogger(__name__)
@@ -137,10 +138,23 @@ def token_cost(provider, model, usage):
         and r.model == model
         and r.effective_from <= datetime.now(UTC).date()
     ]
-    if not rates or it is None or ot is None:
+    if not rates or it is None:
         return it, ot, None, "", ""
-    rate = max(rates, key=lambda r: r.effective_from)
-    cost = (it * rate.input_per_million + ot * rate.output_per_million) / Decimal(1000000)
+    latest = max(rate.effective_from for rate in rates)
+    eligible = [
+        rate
+        for rate in rates
+        if rate.effective_from == latest
+        and rate.min_input_tokens <= it
+        and (rate.max_input_tokens is None or it <= rate.max_input_tokens)
+    ]
+    if len(eligible) != 1:
+        return it, ot, None, "", ""
+    rate = eligible[0]
+    if ot is None and rate.output_per_million != 0:
+        return it, ot, None, "", ""
+    # 输入计费的向量API可以估算费用，但缺失的输出token仍保存NULL，不伪造零。
+    cost = (it * rate.input_per_million + (ot or 0) * rate.output_per_million) / Decimal(1000000)
     return it, ot, cost, rate.currency, rate.effective_from.isoformat()
 
 
@@ -160,7 +174,8 @@ def metric(
         raise ValueError("Invalid metric duration")
     it, ot, cost, currency, price_version = token_cost(provider, model, usage)
     try:
-        with transaction(lock_identity=False) as connection:
+        # 无身份的固定写入入口只接受聚合维度；账号删除后返回的上游用量仍须记账。
+        with actor(None), transaction(lock_identity=False) as connection:
             execute(
                 connection,
                 "SELECT itemtalk_record_metric(:k,:op,:p,:m,:o,:ms,:f,:it,:ot,:c,:cur,:pv)",
@@ -312,6 +327,12 @@ class MetricsMiddleware:
 
         try:
             await self.app(scope, receive, observed)
+        except asyncio.CancelledError:
+            scope.setdefault("v2_error_code", "interrupted")
+            raise
+        except Exception:
+            scope.setdefault("v2_error_code", "INTERNAL_ERROR")
+            raise
         finally:
             route = scope.get("route")
             operation = f"{scope['method']} {getattr(route, 'path', 'unmatched')}"
@@ -320,7 +341,7 @@ class MetricsMiddleware:
                 metric(
                     "http",
                     operation,
-                    str(status),
+                    scope.get("v2_error_code", str(status)),
                     (time.perf_counter() - started) * 1000,
                     first_token_ms=first,
                 )

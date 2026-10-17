@@ -261,6 +261,41 @@ export function AdminPanel() {
             title={data.costNotice}
             description="统计不包含私人问题或模型正文。明细保留30天，日汇总保留一年。"
           />
+          <section className="admin-summary" aria-label="运行概况">
+            {[
+              [
+                '业务请求',
+                data.groups
+                  .filter((row) => row.kind === 'http')
+                  .reduce((n, row) => n + row.count, 0),
+              ],
+              [
+                '外部调用',
+                data.groups
+                  .filter((row) => row.kind === 'upstream')
+                  .reduce((n, row) => n + row.count, 0),
+              ],
+              [
+                '向量缓存命中',
+                data.groups
+                  .filter(
+                    (row) => row.kind === 'cache' && row.outcome === 'hit',
+                  )
+                  .reduce((n, row) => n + row.count, 0),
+              ],
+              [
+                '排队任务',
+                data.queue
+                  .filter((row) => row.status === 'queued')
+                  .reduce((n, row) => n + row.count, 0),
+              ],
+            ].map(([label, value]) => (
+              <Card key={label}>
+                <small>{label}</small>
+                <h2>{value}</h2>
+              </Card>
+            ))}
+          </section>
           <Card title="请求耗时趋势">
             {data.trend.filter((row) => row.kind === 'http').length ? (
               <>
@@ -291,6 +326,14 @@ export function AdminPanel() {
                     })()}
                   />
                 </svg>
+                <p>
+                  最新小时请求 P95：
+                  {Math.round(
+                    data.trend.filter((row) => row.kind === 'http').at(-1)
+                      ?.p95_ms ?? 0,
+                  )}{' '}
+                  ms
+                </p>
                 <p>
                   按小时展示请求
                   P95，时间使用浏览器本地时区。样本不足时不推断容量。
@@ -359,6 +402,7 @@ export function AdminPanel() {
               size="small"
               rowKey={(row) => `${row.job_type}:${row.status}`}
               dataSource={data.queue}
+              scroll={{ x: 450 }}
               columns={[
                 { title: '任务类型', dataIndex: 'job_type' },
                 { title: '状态', dataIndex: 'status' },
@@ -376,6 +420,7 @@ export function AdminPanel() {
               size="small"
               rowKey="id"
               dataSource={audit}
+              scroll={{ x: 650 }}
               columns={[
                 { title: '版本', dataIndex: 'version' },
                 {
@@ -385,7 +430,11 @@ export function AdminPanel() {
                 {
                   title: '修改后配置',
                   render: (_, row) => (
-                    <code>{JSON.stringify(row.after_value)}</code>
+                    <code
+                      style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}
+                    >
+                      {JSON.stringify(row.after_value)}
+                    </code>
                   ),
                 },
               ]}
