@@ -8,6 +8,7 @@ from functools import lru_cache
 from uuid import UUID
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from app.config import settings
 from app.errors import DomainError
@@ -31,9 +32,15 @@ def actor(user_id, *, allow_deleted=False):
 
 @lru_cache
 def engine():
-    # API (2 processes) + worker + migrator stay within the 20-connection budget.
+    # 两个API进程各至多6、Worker至多3、迁移1，共16，留4个诊断连接。
+    # 上游调用仍在事务外；不同角色不能沿用API池而突破20连接预算。
+    url = settings().db_url()
+    role = make_url(url).username
+    size, overflow = (2, 1) if role == "itemtalk_worker" else (5, 1)
+    if role == "itemtalk_migrator":
+        size, overflow = 1, 0
     return create_engine(
-        settings().db_url(), pool_size=3, max_overflow=1, pool_pre_ping=True, hide_parameters=True
+        url, pool_size=size, max_overflow=overflow, pool_pre_ping=True, hide_parameters=True
     )
 
 

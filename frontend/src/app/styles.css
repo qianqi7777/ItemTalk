@@ -19,6 +19,27 @@ body {
   margin: 0;
   min-width: 320px;
 }
+/* 管理表格在卡片内滚动，审计JSON不能撑开手机页面。 */
+.admin-panel {
+  width: 100%;
+  min-width: 0;
+}
+.admin-panel .ant-space-item {
+  min-width: 0;
+}
+.admin-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+}
+@media (max-width: 600px) {
+  .admin-panel {
+    padding: 16px !important;
+  }
+  .admin-panel .ant-card-body {
+    padding: 16px;
+  }
+}
 button,
 input,
 textarea {

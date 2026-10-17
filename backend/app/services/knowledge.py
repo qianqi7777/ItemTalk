@@ -84,7 +84,7 @@ def known_model_sources(connection, model):
     ]
 
 
-def persist_document(connection, model, url, title, mime, data, pages, trusted):
+def persist_document(connection, model, url, title, mime, data, pages, trusted, language="zh-CN"):
     """未核验内容仅落在 document_pages；禁止当作知识片段提前发布。"""
     existing = one(
         connection,
@@ -136,13 +136,14 @@ def persist_document(connection, model, url, title, mime, data, pages, trusted):
         (
             "INSERT INTO "
             "documents(source_id,logical_key,title,language,document_type) VALUES"
-            " (:s,:key,:title,'zh-CN','support') ON "
+            " (:s,:key,:title,:language,'support') ON "
             "CONFLICT(source_id,logical_key) DO UPDATE SET title=EXCLUDED.title "
             "RETURNING *"
         ),
         s=source["id"],
         key=sha256(url.encode()),
         title=title[:1000],
+        language=language,
     )
     version = one(
         connection,

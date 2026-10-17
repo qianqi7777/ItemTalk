@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from app import operations
 from app.config import settings
 from app.db import transaction
 from app.errors import DomainError
@@ -29,27 +30,43 @@ ANSWER_SYSTEM_PROMPT = (
 class ModelGateway:
     def __init__(self, client=None):
         self.config = settings()
+        self._subject = "unattributed"
+        if self.config.v2_enabled:
+            with transaction() as connection:
+                selected = operations.capture(connection)
+            self.config = self.config.model_copy(update={"chat_model": selected["chatModel"]})
         self.client = client or httpx.Client(
             timeout=self.config.model_timeout_seconds, follow_redirects=False
         )
 
     def budget(self, subject):
+        self._subject = subject
         with transaction() as connection:
+            limits = operations.runtime(connection)
             consume(
                 connection,
                 "model:global",
                 datetime.now(UTC).strftime("%Y-%m-%d"),
-                self.config.daily_global_model_call_limit,
+                limits["globalDailyLimit"],
             )
             consume(
                 connection,
                 f"model:{subject}",
                 datetime.now(UTC).strftime("%Y-%m-%d"),
-                self.config.daily_model_call_limit,
+                limits["subjectDailyLimit"],
             )
+            if self.config.acceptance_run_id and self.config.model_provider != "mock":
+                consume(
+                    connection,
+                    f"acceptance:{self.config.acceptance_run_id}",
+                    "total",
+                    self.config.acceptance_call_budget,
+                )
 
     def request(self, role, endpoint, payload):
         config = self.config
+        if role == "chat":
+            payload = {**payload, "model": config.chat_model}
         provider = config.model_provider if role == "chat" else getattr(config, f"{role}_provider")
         if provider not in {"dashscope", "deepseek", "hunyuan"}:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "模型服务未配置")
@@ -68,7 +85,8 @@ class ModelGateway:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "模型服务未配置")
         for attempt in range(self.config.upstream_max_attempts):
             if attempt:
-                self.budget("upstream-retry")
+                self.budget(self._subject)
+            started, outcome, usage = time.perf_counter(), "error", None
             try:
                 response = self.client.post(
                     base.rstrip("/") + endpoint,
@@ -77,16 +95,31 @@ class ModelGateway:
                     timeout=getattr(config, f"{role}_timeout_seconds"),
                 )
                 if response.status_code == 429 or response.status_code >= 500:
+                    outcome = str(response.status_code)
                     if attempt + 1 < config.upstream_max_attempts:
                         time.sleep(0.2 * 2**attempt)
                         continue
                 if response.is_error:
+                    outcome = str(response.status_code)
                     raise response_error(response)
                 if len(response.content) > 2 * 1024 * 1024:
                     raise ValueError("Oversized response")
-                return response.json()
+                result = response.json()
+                usage = result.get("usage") if isinstance(result, dict) else None
+                outcome = "success"
+                return result
             except (httpx.HTTPError, ValueError):
                 raise DomainError(502, "UPSTREAM_MODEL_ERROR", "模型服务暂时不可用") from None
+            finally:
+                operations.metric(
+                    "upstream",
+                    role,
+                    outcome,
+                    (time.perf_counter() - started) * 1000,
+                    provider=provider,
+                    model=payload.get("model", ""),
+                    usage=usage,
+                )
         raise DomainError(502, "UPSTREAM_MODEL_ERROR", "模型请求失败")
 
     def identify(self, text, images, subject):
@@ -442,6 +475,10 @@ class ModelGateway:
                         "不得增加未输入编号。只输出JSON："
                         '{"fullySupported":true,"citations":[{"rank":1,'
                         '"supported":true,"quoteIndex":1}]}。'
+                        "完全不支持时也必须返回每个输入rank，例如："
+                        '{"fullySupported":false,"citations":[{"rank":1,'
+                        '"supported":false,"quoteIndex":null}]}。'
+                        "不支持的引用不得用0替代null，不得返回空citations数组。"
                     ),
                 },
                 {
@@ -548,10 +585,12 @@ class ModelGateway:
         }
         if config.model_provider == "dashscope":
             payload["enable_thinking"] = False
+            payload["stream_options"] = {"include_usage": True}
         total = 0
         for attempt in range(config.upstream_max_attempts):
             if attempt:
-                self.budget("upstream-retry")
+                self.budget(self._subject)
+            started, outcome, usage, first = time.perf_counter(), "interrupted", None, None
             try:
                 with self.client.stream(
                     "POST",
@@ -561,10 +600,12 @@ class ModelGateway:
                     timeout=config.chat_timeout_seconds,
                 ) as response:
                     if response.status_code == 429 or response.status_code >= 500:
+                        outcome = str(response.status_code)
                         if attempt + 1 < config.upstream_max_attempts:
                             time.sleep(0.2 * 2**attempt)
                             continue
                     if response.is_error:
+                        outcome = str(response.status_code)
                         response.read()
                         raise response_error(response)
                     for line in response.iter_lines():
@@ -574,13 +615,18 @@ class ModelGateway:
                         if data == "[DONE]":
                             if not total:
                                 raise ValueError("Empty stream")
+                            outcome = "success"
                             return
                         if len(data) > 262144:
                             raise ValueError("Oversized event")
                         value = json.loads(data)
+                        if isinstance(value.get("usage"), dict):
+                            usage = value["usage"]
                         for choice in value.get("choices", []):
                             chunk = choice.get("delta", {}).get("content")
                             if chunk:
+                                if first is None:
+                                    first = (time.perf_counter() - started) * 1000
                                 if not isinstance(chunk, str):
                                     raise ValueError("Invalid delta")
                                 total += len(chunk)
@@ -592,6 +638,17 @@ class ModelGateway:
                 raise DomainError(
                     502, "UPSTREAM_MODEL_ERROR", ("模型流式连接中断，请查询运行状态")
                 ) from None
+            finally:
+                operations.metric(
+                    "upstream",
+                    "chat_stream",
+                    outcome,
+                    (time.perf_counter() - started) * 1000,
+                    provider=config.model_provider,
+                    model=config.chat_model,
+                    usage=usage,
+                    first_token_ms=first,
+                )
 
 
 class SearchGateway:
@@ -605,6 +662,7 @@ class SearchGateway:
         if config.search_provider != "bocha" or not config.search_api_key.get_secret_value():
             raise DomainError(503, "UPSTREAM_SEARCH_ERROR", "搜索服务未配置")
         for attempt in range(config.upstream_max_attempts):
+            started, outcome = time.perf_counter(), "error"
             try:
                 ModelGateway().budget("search")
                 response = self.client.post(
@@ -630,6 +688,7 @@ class SearchGateway:
                 if payload.get("code", 200) != 200:
                     raise UpstreamError("UPSTREAM_SEARCH_ERROR", provider_code=str(payload["code"]))
                 rows = payload["data"]["webPages"]["value"]
+                outcome = "success"
                 return [
                     {"url": row["url"], "title": row["name"]}
                     for row in rows[: config.search_max_results]
@@ -637,3 +696,11 @@ class SearchGateway:
                 ]
             except (httpx.HTTPError, KeyError, TypeError, ValueError):
                 raise DomainError(502, "UPSTREAM_SEARCH_ERROR", "搜索服务暂时不可用") from None
+            finally:
+                operations.metric(
+                    "upstream",
+                    "search",
+                    outcome,
+                    (time.perf_counter() - started) * 1000,
+                    provider=config.search_provider,
+                )

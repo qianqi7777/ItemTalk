@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
+from app import operations
 from app.config import settings
 from app.db import actor, execute, json_value, many, one, transaction, validate_runtime
 from app.errors import DomainError, missing
@@ -61,6 +62,7 @@ HEARTBEAT_SQL = "UPDATE assistant_runs SET heartbeat_at=now() WHERE id=:id AND s
 
 @app.exception_handler(DomainError)
 async def domain_error(_request, error):
+    _request.scope["v2_error_code"] = error.code
     headers = {"Retry-After": "60"} if error.status == 429 else None
     return JSONResponse(error.body(), status_code=error.status, headers=headers)
 
@@ -69,12 +71,14 @@ async def domain_error(_request, error):
 async def validation_error(_request, _error):
     # Pydantic 的 input 可能含密码，禁止直接返回或记录其异常详情。
     error = DomainError(422, "VALIDATION_ERROR", "输入格式无效，请检查字段内容")
+    _request.scope["v2_error_code"] = error.code
     return JSONResponse(error.body(), status_code=422)
 
 
 @app.exception_handler(IntegrityError)
 async def integrity_error(_request, _error):
     error = DomainError(409, "RESOURCE_CONFLICT", "资源状态冲突，请刷新后重试")
+    _request.scope["v2_error_code"] = error.code
     return JSONResponse(error.body(), status_code=409)
 
 
@@ -113,8 +117,10 @@ async def guard_writes(request, call_next):
         with actor(identity):
             return await call_next(request)
     except DomainError as error:
+        request.scope["v2_error_code"] = error.code
         return JSONResponse(error.body(), status_code=error.status)
     except Exception as error:
+        request.scope["v2_error_code"] = "INTERNAL_ERROR"
         # 捕获传输层未预期故障，避免框架默认堆栈包含上游响应或用户参数。
         logger.error("HTTP failure: error_type=%s", type(error).__name__)
         failure = DomainError(500, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试")
@@ -153,7 +159,63 @@ def health():
 
 @app.get("/api/v1/capabilities")
 def capabilities(current=Depends(user)):
-    return {"speechToText": asr_enabled(), "recordingMaxSeconds": 60}
+    with transaction() as connection:
+        admin = operations.is_admin(connection)
+    return {"speechToText": asr_enabled(), "recordingMaxSeconds": 60, "adminConsole": admin}
+
+
+@app.get("/api/v1/admin/overview")
+def admin_overview(days: int = Query(default=1, ge=1, le=30), current=Depends(user)):
+    with transaction() as connection:
+        return operations.overview(connection, days)
+
+
+@app.get("/api/v1/admin/metrics")
+def admin_metrics(days: int = Query(default=1, ge=1, le=30), current=Depends(user)):
+    with transaction() as connection:
+        return {"groups": operations.metrics(connection, days)}
+
+
+@app.get("/api/v1/admin/runtime-config")
+def admin_runtime(current=Depends(user)):
+    with transaction() as connection:
+        operations.require_admin(connection)
+        return operations.runtime(connection)
+
+
+@app.patch("/api/v1/admin/runtime-config")
+def admin_update(
+    request: operations.RuntimeUpdate,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+):
+    with transaction() as connection:
+        operations.require_admin(connection)
+        body = request.model_dump()
+        previous = idempotent(connection, current["id"], "admin/runtime-config", key, body)
+        if previous:
+            return previous["response_snapshot"]
+        result = operations.update_runtime(connection, request)
+        remember(
+            connection, current["id"], "admin/runtime-config", key, body, current["id"], result, 200
+        )
+        return result
+
+
+@app.get("/api/v1/admin/audit")
+def admin_audit(before: int | None = Query(default=None, ge=1), current=Depends(user)):
+    from app.db import many
+
+    with transaction() as connection:
+        operations.require_admin(connection)
+        rows = many(
+            connection,
+            "SELECT id,version,before_value,after_value,created_at "
+            "FROM runtime_config_audit WHERE (CAST(:b AS bigint) IS NULL OR id<:b) "
+            "ORDER BY id DESC LIMIT 50",
+            b=before,
+        )
+        return {"items": rows, "nextBefore": rows[-1]["id"] if len(rows) == 50 else None}
 
 
 @app.post("/api/v1/assets/{asset_id}/transcribe")
@@ -857,6 +919,7 @@ def event(kind, value):
 def stream(
     conversation_id: UUID,
     body: MessageRequest,
+    request: Request,
     current=Depends(user),
     key: str = Header(alias="Idempotency-Key"),
     retry: UUID | None = Header(default=None, alias="Retry-Of"),
@@ -907,10 +970,13 @@ def stream(
                     yield event("citation", citation)
                 yield event("done", {"runId": str(run["id"]), "messageId": message["id"]})
             else:
+                request.scope["v2_error_code"] = result["status"]
                 yield event("status", {"runId": str(run["id"]), "status": result["status"]})
         except DomainError as error:
+            request.scope["v2_error_code"] = error.code
             yield event("error", {**error.body(), "runId": str(run["id"])})
         except asyncio.CancelledError:
+            request.scope["v2_error_code"] = "interrupted"
             # 后台外部调用可能仍返回；状态栅栏会阻止其覆盖 interrupted。
             with transaction() as connection:
                 execute(
@@ -953,3 +1019,7 @@ def cancel_run(conversation_id: UUID, run_id: UUID, current=Depends(user)):
         return chat.run_view(
             connection, chat.get_run(connection, conversation_id, run_id, current["id"])
         )
+
+
+# 最外层观测包括认证/限流失败，SSE正文消费完毕才结算完整耗时。
+app.add_middleware(operations.MetricsMiddleware)
