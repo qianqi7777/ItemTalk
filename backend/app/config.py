@@ -1,11 +1,36 @@
 """环境配置入口；秘密字段不参与日志展示，数据库 URL 由驱动安全构造。"""
 
+import json
+from datetime import date
+from decimal import Decimal
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy import URL
+
+
+class TextProfile(BaseModel):
+    model: str = Field(pattern=r"^[a-zA-Z0-9_.:-]{1,100}$")
+    accepted: bool = False
+
+
+class PriceRate(BaseModel):
+    provider: str
+    model: str
+    effective_from: date
+    currency: Literal["CNY", "USD"] = "CNY"
+    input_per_million: Decimal = Field(ge=0, le=1000000, allow_inf_nan=False)
+    output_per_million: Decimal = Field(ge=0, le=1000000, allow_inf_nan=False)
+    min_input_tokens: int = Field(default=0, ge=0)
+    max_input_tokens: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def valid_range(self):
+        if self.max_input_tokens is not None and self.max_input_tokens < self.min_input_tokens:
+            raise ValueError("Invalid input-token pricing range")
+        return self
 
 
 class Settings(BaseSettings):
@@ -68,6 +93,26 @@ class Settings(BaseSettings):
     run_timeout_seconds: int = 180
     worker_poll_seconds: float = 1
     rate_limit_per_minute: int = 60
+    # 独立发布门禁：迁移/集成验收后启用，不改变既有V1环境。
+    v2_enabled: bool = False
+    model_profiles: Annotated[dict[str, TextProfile], NoDecode] = Field(default_factory=dict)
+    model_prices: Annotated[list[PriceRate], NoDecode] = Field(default_factory=list)
+    runtime_global_hard_limit: int = Field(default=1000, ge=1, le=1000000)
+    runtime_subject_hard_limit: int = Field(default=100, ge=1, le=1000000)
+    query_cache_ttl_seconds: int = Field(default=86400, ge=1, le=86400)
+    acceptance_run_id: str = Field(default="", pattern=r"^[a-zA-Z0-9_-]{0,64}$")
+    acceptance_call_budget: int = Field(default=300, ge=1, le=300)
+
+    @field_validator("model_profiles", "model_prices", mode="before")
+    @classmethod
+    def optional_json(cls, value, info):
+        if isinstance(value, str):
+            return (
+                json.loads(value)
+                if value.strip()
+                else ({} if info.field_name == "model_profiles" else [])
+            )
+        return value
 
     @model_validator(mode="after")
     def production_requirements(self):

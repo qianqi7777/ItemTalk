@@ -86,13 +86,16 @@ def product_model(connection, brand, code, region=None, hardware=None):
 
 
 def new_job(connection, job_type, payload, user=None, key=None, retry=None):
+    from app.operations import capture
+
     return one(
         connection,
         (
             "INSERT INTO "
-            "jobs(user_id,job_type,status,idempotency_key,request_hash,payload,available_at,retry_of_job_id,progress)"
+            "jobs(user_id,job_type,status,idempotency_key,request_hash,payload,available_at,retry_of_job_id,progress,runtime_snapshot)"
             " VALUES (:u,:type,'queued',:key,:hash,CAST(:payload AS "
-            "jsonb),now(),:retry,jsonb_build_object('stage','queued','percent',0))"
+            "jsonb),now(),:retry,jsonb_build_object('stage','queued','percent',0),"
+            "CAST(:snapshot AS jsonb))"
             " RETURNING *"
         ),
         u=user,
@@ -101,6 +104,7 @@ def new_job(connection, job_type, payload, user=None, key=None, retry=None):
         hash=digest(payload),
         payload=json_value(payload),
         retry=retry,
+        snapshot=json_value(capture(connection)),
     )
 
 
