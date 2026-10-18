@@ -244,7 +244,12 @@ def test_mock_cloud_roundtrip_restores_real_pg_snapshot_without_changing_source(
     with psycopg.connect(**args) as source:
         after_write = manifest(source)
     result = weekly_restore(tmp_path, target, pg_bin())
-    assert result == {"status": "passed", "restoreVerified": True, "target": "isolated-database"}
+    assert result == {
+        "status": "passed",
+        "restoreVerified": True,
+        "target": "isolated-database",
+        "indexDefinitionsVerified": True,
+    }
     assert len(cloud.calls) == 4 and source_assets.objects
     with psycopg.connect(**args) as source:
         assert manifest(source) == after_write

@@ -134,6 +134,8 @@ jobs:
       RATE_LIMIT_PER_MINUTE: '10000'
       DAILY_MODEL_CALL_LIMIT: '10000'
       V2_ENABLED: 'true'
+      RUNTIME_GLOBAL_HARD_LIMIT: '10000'
+      RUNTIME_SUBJECT_HARD_LIMIT: '10000'
       E2E_ADMIN_DATABASE_URL: postgresql+psycopg://itemtalk_migrator:test@localhost:5432/itemtalk_e2e
     steps:
     - uses: actions/checkout@v4
