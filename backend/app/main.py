@@ -210,7 +210,7 @@ def admin_audit(before: int | None = Query(default=None, ge=1), current=Depends(
         operations.require_admin(connection)
         rows = many(
             connection,
-            "SELECT id,version,before_value,after_value,created_at "
+            "SELECT id,actor_id,version,before_value,after_value,created_at "
             "FROM runtime_config_audit WHERE (CAST(:b AS bigint) IS NULL OR id<:b) "
             "ORDER BY id DESC LIMIT 50",
             b=before,

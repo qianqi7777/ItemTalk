@@ -25,16 +25,46 @@ def provision(user_id, enabled):
             execute(connection, "DELETE FROM admin_memberships WHERE user_id=:u", u=user_id)
 
 
+def reset_runtime(user_id, expected_version):
+    """回退镜像前先解除暂停并恢复现有环境额度；通过原子审计入口，不清零计数。"""
+    from app.config import settings
+    from app.operations import RuntimeUpdate, update_runtime
+
+    config = settings()
+    with actor(user_id), transaction() as connection:
+        return update_runtime(
+            connection,
+            RuntimeUpdate(
+                expectedVersion=expected_version,
+                globalDailyLimit=config.daily_global_model_call_limit,
+                subjectDailyLimit=config.daily_model_call_limit,
+                backgroundPaused=False,
+                chatProfile="current",
+            ),
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["grant", "revoke"])
+    parser.add_argument("action", choices=["grant", "revoke", "reset-runtime"])
     parser.add_argument("--user-id", type=UUID, required=True)
+    parser.add_argument("--expected-version", type=int)
     args = parser.parse_args()
+    if args.action == "reset-runtime" and (
+        args.expected_version is None or args.expected_version < 1
+    ):
+        parser.error("reset-runtime requires --expected-version >= 1")
     try:
+        if args.action == "reset-runtime":
+            result = reset_runtime(args.user_id, args.expected_version)
+            print(f"Runtime configuration restored; version={result['version']}")
+            return
         provision(args.user_id, args.action == "grant")
     except Exception:
         parser.exit(
-            1, "Administrator provisioning failed; use the restricted migration identity.\n"
+            1,
+            "Administrator operation failed; check identity, version "
+            "and restricted configuration.\n",
         )
     print("Administrator membership updated")
 

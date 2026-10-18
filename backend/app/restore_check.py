@@ -110,6 +110,17 @@ def manifest(connection):
         "JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' "
         "AND NOT t.tgisinternal ORDER BY c.relname,t.tgname"
     ).fetchall()
+    indexes = connection.execute(
+        "SELECT t.relname,c.relname,pg_get_indexdef(c.oid),i.indisvalid,i.indisready "
+        "FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
+        "JOIN pg_class t ON t.oid=i.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace "
+        "WHERE n.nspname='public' ORDER BY t.relname,c.relname"
+    ).fetchall()
+    # pg_dump也会在部分索引谓词中重排varchar[]强制转换，使用同一窄范围归一化。
+    indexes = [
+        (table, name, canonical_constraint(definition), valid, ready)
+        for table, name, definition, valid, ready in indexes
+    ]
     return {
         "tables": results,
         "extensions": extensions,
@@ -119,7 +130,16 @@ def manifest(connection):
         "policies": policies,
         "functions": functions,
         "triggers": triggers,
+        "indexes": indexes,
     }
+
+
+def manifest_matches(actual, expected):
+    # V1已保存清单没有索引字段，仍允许按原范围恢复；结果必须明确未核验索引。
+    # 新清单始终逐项比较索引定义及valid/ready状态，不只检查表数据相同。
+    if "indexes" not in expected:
+        actual = {key: value for key, value in actual.items() if key != "indexes"}
+    return json.loads(json.dumps(actual)) == json.loads(json.dumps(expected))
 
 
 def postgres_clients(pg_bin=None):
@@ -267,6 +287,7 @@ def restore_drill(
         result = {
             "status": "passed" if verify_restore else "exported",
             "restoreVerified": verify_restore,
+            "indexDefinitionsVerified": verify_restore and "indexes" in expected,
             "tables": len(expected["tables"]),
             "rows": sum(table["rows"] for table in expected["tables"].values()),
             "backup": str(backup),
@@ -341,7 +362,7 @@ def restore_snapshot(backup, expected, files, assets_archive, connect_args, envi
         )
         with psycopg.connect(**{**connect_args, "dbname": scratch}) as restored:
             # 每周从JSON清单加载时tuple变成list；比较规范JSON，仍核验全部字段。
-            if json.loads(json.dumps(manifest(restored))) != json.loads(json.dumps(expected)):
+            if not manifest_matches(manifest(restored), expected):
                 raise ValueError("Restored database differs from the consistent snapshot")
             if files is not None:
                 with tempfile.TemporaryDirectory(
@@ -349,7 +370,12 @@ def restore_snapshot(backup, expected, files, assets_archive, connect_args, envi
                 ) as directory:
                     restore_assets(assets_archive, directory, files)
                     verify_references(restored, file_manifest(directory))
-        return {"status": "passed", "restoreVerified": True, "target": "isolated-database"}
+        return {
+            "status": "passed",
+            "restoreVerified": True,
+            "target": "isolated-database",
+            "indexDefinitionsVerified": "indexes" in expected,
+        }
     finally:
         if created:
             # CREATE失败时不删已有库，甚至不会尝试清理同名对象。

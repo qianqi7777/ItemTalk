@@ -108,7 +108,15 @@ class ModelGateway:
                 usage = result.get("usage") if isinstance(result, dict) else None
                 outcome = "success"
                 return result
-            except (httpx.HTTPError, ValueError):
+            except (httpx.HTTPError, ValueError) as error:
+                # 仅保存固定类型，不记录异常消息（其中可能含请求地址或供应商正文）。
+                outcome = (
+                    "timeout"
+                    if isinstance(error, httpx.TimeoutException)
+                    else "transport_error"
+                    if isinstance(error, httpx.HTTPError)
+                    else "invalid_response"
+                )
                 raise DomainError(502, "UPSTREAM_MODEL_ERROR", "模型服务暂时不可用") from None
             finally:
                 operations.metric(

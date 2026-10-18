@@ -62,5 +62,17 @@ def test_restore_manifest_detects_rls_and_column_permission_changes(database):
         assert manifest(connection)["columnGrants"] != before["columnGrants"]
         connection.execute("ALTER TABLE manuals DISABLE TRIGGER protect_manual_generation")
         assert manifest(connection)["triggers"] != before["triggers"]
+        connection.execute("DROP INDEX ix_chunks_embedding_hnsw")
+        assert manifest(connection)["indexes"] != before["indexes"]
         # 本测试只检查演练的检测能力，不把降级后的测试权限持久化。
         connection.rollback()
+
+
+def test_new_restore_manifest_checks_indexes_and_old_bundles_keep_original_scope():
+    from app.restore_check import manifest_matches
+
+    current = {"tables": {"test": {"rows": 1}}, "indexes": [["hnsw", True, True]]}
+    assert manifest_matches(current, current)
+    assert not manifest_matches({**current, "indexes": []}, current)
+    assert manifest_matches(current, {"tables": current["tables"]})
+    assert not manifest_matches({**current, "tables": {}}, {"tables": current["tables"]})

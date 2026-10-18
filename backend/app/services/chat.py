@@ -239,42 +239,59 @@ def _retrieve(model_id, question, vector, limit=10):
             id=model_id,
         )
         query = lexical_question(question, model) if model else question
+        # 按当前事务设置索引搜索参数，连接归还后不泄漏到其他用户。
+        execute(connection, "SET LOCAL pg_trgm.word_similarity_threshold=0.1")
+        execute(connection, "SET LOCAL hnsw.ef_search=200")
+        execute(connection, "SET LOCAL hnsw.iterative_scan='strict_order'")
+        # 两路内部候选各100，RRF及两个语义保留位不变；最终严格不超过10片。
+        # 先冻结已核验版本集合，再走索引，避免逐片联表破坏KNN路径或绕过来源核验。
         rows = many(
             connection,
-            (
-                "WITH eligible AS ( SELECT "
-                # 排名阶段只携带ID和分数，避免把正文及1024维向量重复写入排序临时文件。
-                "k.id, "
-                "k.embedding <=> CAST(:vector AS vector) AS vector_distance, "
-                "word_similarity(:question,k.content) AS text_score FROM "
-                "knowledge_chunks k JOIN product_models m ON m.id=k.product_model_id "
-                "JOIN document_versions v ON v.id=k.document_version_id JOIN "
-                "documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id"
-                " JOIN document_model_links l ON l.document_version_id=v.id AND "
-                "l.product_model_id=m.id WHERE k.product_model_id=:model AND "
-                "k.verification_status='verified' AND m.identity_status='verified' "
-                "AND m.verification_status='verified' AND "
-                "v.verification_status='verified' AND "
-                "s.verification_status='verified' AND l.match_type='exact' AND "
-                "k.embedding_model=:embedding_model AND "
-                "k.embedding_revision=:revision AND k.embedding IS NOT NULL), ranked AS "
-                "(SELECT *,row_number() OVER(ORDER BY vector_distance,id) AS vector_rank,"
-                "row_number() OVER(ORDER BY text_score DESC,id) AS text_rank FROM eligible) "
-                # 长手册重复注意事项容易占满词法排名；保留两个最相关语义候选，
-                # 其余名额仍由融合分数选择，不能绕过上面的逐层来源核验。
-                ", selected AS (SELECT * FROM ranked ORDER BY "
-                "CASE WHEN vector_rank<=:semantic_reserve "
-                "THEN 0 ELSE 1 END,(1.0/(60+vector_rank)+CASE WHEN text_score>0 "
-                "THEN 1.0/(60+text_rank) ELSE 0 END) DESC,id LIMIT :limit) "
-                "SELECT k.*,v.version_label,v.verified_at,d.title,s.url,"
-                "r.vector_distance,r.text_score,r.vector_rank,r.text_rank FROM selected r "
-                "JOIN knowledge_chunks k ON k.id=r.id "
-                "JOIN document_versions v ON v.id=k.document_version_id "
-                "JOIN documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id "
-                "ORDER BY CASE WHEN r.vector_rank<=:semantic_reserve THEN 0 ELSE 1 END,"
-                "(1.0/(60+r.vector_rank)+CASE WHEN r.text_score>0 "
-                "THEN 1.0/(60+r.text_rank) ELSE 0 END) DESC,r.id"
-            ),
+            """
+            WITH verified_versions AS MATERIALIZED (
+            SELECT v.id FROM document_versions v JOIN documents d ON
+            d.id=v.document_id
+            JOIN sources s ON s.id=d.source_id JOIN document_model_links l ON
+            l.document_version_id=v.id
+            JOIN product_models m ON m.id=l.product_model_id
+            WHERE m.id=:model AND m.identity_status='verified' AND
+            m.verification_status='verified'
+            AND v.verification_status='verified' AND
+            s.verification_status='verified' AND l.match_type='exact'),
+            eligible AS NOT MATERIALIZED (SELECT k.id,k.content,k.embedding FROM
+            knowledge_chunks k
+            WHERE k.product_model_id=:model AND k.verification_status='verified'
+            AND k.embedding_model=:embedding_model AND
+            k.embedding_revision=:revision AND k.embedding IS NOT NULL
+            AND k.document_version_id=ANY(ARRAY(SELECT id FROM verified_versions))),
+            semantic AS (SELECT id,row_number() OVER(ORDER BY distance,id) AS
+            vector_rank FROM
+            (SELECT id,embedding <=> CAST(:vector AS vector) AS distance FROM
+            eligible ORDER BY distance LIMIT 100) q),
+            lexical AS (SELECT id,text_score,row_number() OVER(ORDER BY text_score
+            DESC,id) AS text_rank FROM
+            (SELECT id,word_similarity(:question,content) AS text_score FROM
+            eligible
+            WHERE :question <% content ORDER BY content <->> :question,id LIMIT 100)
+            q),
+            ranked AS (SELECT COALESCE(s.id,l.id) AS
+            id,s.vector_rank,l.text_rank,COALESCE(l.text_score,0) AS text_score,
+            COALESCE(1.0/(60+s.vector_rank),0)+COALESCE(1.0/(60+l.text_rank),0) AS
+            score
+            FROM semantic s FULL JOIN lexical l ON s.id=l.id),
+            selected AS (SELECT * FROM ranked ORDER BY CASE WHEN
+            vector_rank<=:semantic_reserve THEN 0 ELSE 1 END,score DESC,id LIMIT
+            :limit)
+            SELECT
+            k.*,v.version_label,v.verified_at,d.title,s.url,r.vector_rank,r.text_rank,r.text_score,
+            k.embedding <=> CAST(:vector AS vector) AS vector_distance
+            FROM selected r JOIN knowledge_chunks k ON k.id=r.id JOIN
+            document_versions v ON v.id=k.document_version_id
+            JOIN documents d ON d.id=v.document_id JOIN sources s ON
+            s.id=d.source_id
+            ORDER BY CASE WHEN r.vector_rank<=:semantic_reserve THEN 0 ELSE 1
+            END,r.score DESC,r.id
+            """,
             vector=json_value(vector),
             question=query,
             model=model_id,

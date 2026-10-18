@@ -39,6 +39,7 @@ type Metric = {
 };
 type Audit = {
   id: number;
+  actor_id?: string | null;
   version: number;
   created_at: string;
   after_value: unknown;
@@ -423,6 +424,10 @@ export function AdminPanel() {
               scroll={{ x: 650 }}
               columns={[
                 { title: '版本', dataIndex: 'version' },
+                {
+                  title: '操作者',
+                  render: (_, row) => row.actor_id?.slice(0, 8) ?? '未知',
+                },
                 {
                   title: '修改时间',
                   render: (_, row) => new Date(row.created_at).toLocaleString(),

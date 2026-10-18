@@ -21,6 +21,30 @@ from tests.conftest import register_login
 pytestmark = pytest.mark.postgres
 
 
+@pytest.mark.parametrize(
+    "failure,outcome", [(httpx.ReadTimeout, "timeout"), (httpx.ConnectError, "transport_error")]
+)
+def test_upstream_errors_store_type_without_sensitive_exception_message(
+    v2, monkeypatch, failure, outcome
+):
+    administrator(v2)
+    monkeypatch.setenv("MODEL_PROVIDER", "dashscope")
+    monkeypatch.setenv("MODEL_API_KEY", "test-only-key")
+    settings.cache_clear()
+
+    def fail(request):
+        raise failure("sensitive-upstream-address-and-input", request=request)
+
+    gateway = ModelGateway(httpx.Client(transport=httpx.MockTransport(fail)))
+    with pytest.raises(DomainError):
+        gateway.request("chat", "/chat/completions", {"model": "test"})
+    with transaction() as connection:
+        row = one(
+            connection, "SELECT outcome,input_tokens FROM telemetry_events WHERE kind='upstream'"
+        )
+    assert row == {"outcome": outcome, "input_tokens": None}
+
+
 @pytest.fixture
 def v2(client, monkeypatch):
     monkeypatch.setenv("V2_ENABLED", "true")
@@ -307,3 +331,93 @@ def test_raw_operational_tables_are_not_readable_by_nonadmin_role(v2):
     with pytest.raises(DBAPIError), actor(user["id"]), transaction() as connection:
         execute(connection, "SET LOCAL ROLE itemtalk_app")
         execute(connection, "UPDATE runtime_config SET global_limit=1000000")
+
+
+def test_offline_runtime_rollback_is_versioned_audited_and_preserves_usage(v2):
+    from app.admin_cli import reset_runtime
+
+    user = administrator(v2)
+    assert update(v2, globalDailyLimit=4, backgroundPaused=True).status_code == 200
+    ModelGateway().budget("rollback-test")
+    restored = reset_runtime(UUID(user["id"]), 2)
+    assert restored["version"] == 3 and not restored["backgroundPaused"]
+    assert restored["chatProfile"] == "current"
+    assert len(v2.get("/api/v1/admin/audit").json()["items"]) == 2
+    with pytest.raises(DomainError):
+        reset_runtime(UUID(user["id"]), 2)
+    with transaction() as connection:
+        assert (
+            one(connection, "SELECT amount FROM usage_counters WHERE subject='model:global'")[
+                "amount"
+            ]
+            == 1
+        )
+
+
+def test_sse_error_event_is_not_counted_as_successful_http_200(v2, monkeypatch):
+    from tests.test_api import post
+    from tests.test_v1_content import ready_product
+
+    administrator(v2)
+    product = ready_product(v2)
+    conversation = post(v2, "/conversations", {"userProductInstanceId": product["id"]}).json()
+
+    def broken_stream(*args, **kwargs):
+        raise DomainError(502, "UPSTREAM_MODEL_ERROR", "受控测试失败")
+        yield "never"
+
+    monkeypatch.setattr(ModelGateway, "answer_stream", broken_stream)
+    response = v2.post(
+        f"/api/v1/conversations/{conversation['id']}/stream",
+        json={"content": "如何开机？"},
+        headers={"Idempotency-Key": "failed-stream"},
+    )
+    assert response.status_code == 200 and "event: error" in response.text
+    with transaction() as connection:
+        row = one(
+            connection,
+            "SELECT outcome,first_token_ms FROM telemetry_events "
+            "WHERE kind='http' AND operation LIKE '%/stream' ORDER BY id DESC LIMIT 1",
+        )
+    assert row["outcome"] == "UPSTREAM_MODEL_ERROR" and row["first_token_ms"] is None
+
+
+def test_competing_claims_keep_distinct_job_snapshots_and_execute_once(v2, monkeypatch):
+    from threading import Barrier
+
+    from app import worker
+    from app.services.queue import fenced, finish
+
+    user = administrator(v2)
+    monkeypatch.setenv("MODEL_PROFILES", '{"quality":{"model":"qwen3.7-plus","accepted":true}}')
+    settings.cache_clear()
+    with actor(user["id"]), transaction() as connection:
+        first = new_job(connection, "identify", {}, user=UUID(user["id"]))
+    assert update(v2, chatProfile="quality").status_code == 200
+    with actor(user["id"]), transaction() as connection:
+        second = new_job(connection, "identify", {}, user=UUID(user["id"]))
+    barrier, observed = Barrier(2), []
+
+    def controlled_handler(job):
+        selected = ModelGateway().config.chat_model
+        barrier.wait(timeout=10)
+        observed.append((job["id"], selected))
+        with transaction() as connection:
+            fenced(connection, job)
+            finish(connection, job)
+
+    monkeypatch.setattr(worker, "identify", controlled_handler)
+    # 只竞争同一轮创建的两个任务；不在测试中启动常驻并发Worker。
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        assert sum(pool.map(worker.run_once, [first["id"], second["id"]] * 5)) == 2
+    assert dict(observed) == {
+        first["id"]: first["runtime_snapshot"]["chatModel"],
+        second["id"]: "qwen3.7-plus",
+    }
+    with transaction() as connection:
+        rows = many(
+            connection,
+            "SELECT status,attempts FROM jobs WHERE id=ANY(:ids)",
+            ids=[first["id"], second["id"]],
+        )
+    assert len(rows) == 2 and all(row == {"status": "succeeded", "attempts": 1} for row in rows)
