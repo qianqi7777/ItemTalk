@@ -156,6 +156,7 @@ export function ManualPanel({ product }: { product: ProductInstance }) {
       >
         使用说明书
       </Button>
+      {!open && <p className="tool-description">查阅章节与核验来源</p>}
       {open && (
         <div className="manual-content">
           <div className="inline-actions">

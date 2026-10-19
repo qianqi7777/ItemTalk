@@ -10,7 +10,8 @@
     "format": "prettier --write .",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:ui": "playwright test -c playwright.ui.config.ts"
   },
   "dependencies": {
     "antd": "6.6.6",

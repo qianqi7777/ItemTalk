@@ -40,6 +40,7 @@ export function MemoryPanel({ instanceId }: { instanceId: string }) {
       >
         我的记忆
       </Button>
+      {!open && <p className="tool-description">确认并管理个人使用偏好</p>}
       {open && (
         <div className="memory-content">
           <p>

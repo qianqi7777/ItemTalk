@@ -1,6 +1,14 @@
 import { useState } from 'react';
 import { Alert, Button, Form, Input, Segmented } from 'antd';
-import { ArrowUpRight, LockKeyhole, Mail, ShieldCheck } from 'lucide-react';
+import {
+  ArrowUpRight,
+  BookOpen,
+  Camera,
+  LockKeyhole,
+  Mail,
+  MessageCircle,
+  ShieldCheck,
+} from 'lucide-react';
 import { Brand } from '../components/Brand';
 import { DeviceScene } from '../components/DeviceScene';
 import { post } from '../services/api';
@@ -33,12 +41,12 @@ export function AuthPage() {
       <div className="auth-content">
         <section className="auth-story">
           <span className="story-kicker">
-            <span /> EVERY DEVICE HAS A STORY
+            <span /> 从认识它，到用好它
           </span>
           <h1>
-            认识你的设备，
+            设备的使用说明，
             <br />
-            <em>发现更多可能。</em>
+            <em>可以是一场对话。</em>
           </h1>
           <p>
             拍下产品，确认型号。
@@ -46,6 +54,20 @@ export function AuthPage() {
             让复杂的说明书，变成简单的对话。
           </p>
           <DeviceScene />
+          <div className="story-steps" aria-label="使用步骤">
+            <span>
+              <Camera size={17} aria-hidden="true" />
+              拍照识别
+            </span>
+            <span>
+              <BookOpen size={17} aria-hidden="true" />
+              核验资料
+            </span>
+            <span>
+              <MessageCircle size={17} aria-hidden="true" />
+              有据问答
+            </span>
+          </div>
           <div className="trust-note">
             <ShieldCheck size={20} aria-hidden="true" />
             每一个可靠答案，都有来源。
@@ -64,6 +86,7 @@ export function AuthPage() {
             options={['登录', '注册']}
             onChange={setMode}
             block
+            disabled={busy}
           />
           {error && <Alert title={error} type="error" role="alert" showIcon />}
           <Form layout="vertical" onFinish={submit} requiredMark={false}>

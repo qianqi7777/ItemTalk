@@ -187,10 +187,10 @@ export function HomePage() {
     setError('');
   };
   return (
-    <div className="workspace" id="workspace">
+    <main className="workspace" id="workspace">
       <header className="page-heading">
         <div>
-          <span className="eyebrow">你的设备，值得被了解</span>
+          <span className="eyebrow">设备工作区 / DEVICE WORKSPACE</span>
           <h1>
             {product ? '用好你的每一件设备。' : '设备的答案，从这里开始。'}
           </h1>
@@ -225,6 +225,35 @@ export function HomePage() {
           onClose={() => setError('')}
           role="alert"
         />
+      )}
+      {!product && products.length > 0 && (
+        <section className="device-library" aria-label="已有设备">
+          <div className="library-heading">
+            <h2>继续了解你的设备</h2>
+            <span>{products.length} 件设备</span>
+          </div>
+          <div className="device-library-items">
+            {products.map((item) => (
+              <button
+                type="button"
+                key={item.id}
+                disabled={busy || chatBusy || guidanceBusy}
+                onClick={() => {
+                  selectProduct(item);
+                  setJob(undefined);
+                  setError('');
+                }}
+              >
+                <PackageSearch size={21} aria-hidden="true" />
+                <span>
+                  <small>{item.brandName}</small>
+                  <strong>{item.nickname || item.modelCode}</strong>
+                </span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+        </section>
       )}
       {product && (
         <section className="product-summary">
@@ -483,10 +512,12 @@ export function HomePage() {
         </div>
       )}
       {product ? (
-        <div key={product.id}>
-          <ManualPanel product={product} />
-          <MemoryPanel instanceId={product.id} />
-          <GuidancePanel product={product} onBusyChange={setGuidanceBusy} />
+        <div key={product.id} className="product-workbench">
+          <div className="product-tools" aria-label="设备资料与工具">
+            <ManualPanel product={product} />
+            <MemoryPanel instanceId={product.id} />
+            <GuidancePanel product={product} onBusyChange={setGuidanceBusy} />
+          </div>
           <ChatPanel product={product} onBusyChange={setChatBusy} />
         </div>
       ) : (
@@ -508,6 +539,6 @@ export function HomePage() {
           </div>
         </div>
       )}
-    </div>
+    </main>
   );
 }

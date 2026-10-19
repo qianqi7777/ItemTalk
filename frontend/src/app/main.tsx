@@ -7,18 +7,10 @@ import {
   useState,
 } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
-import { Button, ConfigProvider, Spin } from 'antd';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { ConfigProvider, Spin } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import {
-  ArrowUpRight,
-  CircleDot,
-  LogOut,
-  PackageSearch,
-  ShieldCheck,
-} from 'lucide-react';
-import { Brand } from '../components/Brand';
-import { DeleteAction } from '../components/DeleteAction';
+import { AppShell } from '../components/AppShell';
 import { api, post } from '../services/api';
 import { SessionContext } from '../stores/session';
 import type { User } from '../types/api';
@@ -74,105 +66,24 @@ export function App() {
       ) : !user ? (
         <AuthPage />
       ) : (
-        <div className="app-shell">
-          <aside className="sidebar">
-            <a className="brand" href={import.meta.env.BASE_URL}>
-              <Brand inverted />
-            </a>
-            <div className="nav-label">WORKSPACE / 工作空间</div>
-            {admin && (
-              <Link className="nav-item" to="/admin">
-                运行管理
-              </Link>
-            )}
-            {admin && (
-              <Link className="nav-item" to="/">
-                设备工作区
-              </Link>
-            )}
-            <a className="nav-item" href="#workspace" aria-current="page">
-              <PackageSearch size={18} aria-hidden="true" />
-              设备工作区
-              <ArrowUpRight size={16} aria-hidden="true" />
-            </a>
-            <div className="sidebar-journey">
-              <span className="nav-label">从照片，到答案</span>
-              <ol>
-                <li>
-                  <span>01</span>认识你的设备
-                </li>
-                <li>
-                  <span>02</span>核验官方资料
-                </li>
-                <li>
-                  <span>03</span>开始有据问答
-                </li>
-              </ol>
-            </div>
-            <div className="sidebar-bottom">
-              <span className="sidebar-shield">
-                <ShieldCheck size={21} aria-hidden="true" />
-              </span>
-              <strong>好答案，有据可查。</strong>
-              <p>
-                从可信的官方资料中，
-                <br />
-                找到设备的正确打开方式。
-              </p>
-            </div>
-            <span className="sidebar-caption">
-              BUILT FOR EVERYDAY CURIOSITY
-            </span>
-          </aside>
-          <div className="main-area">
-            <header className="topbar">
-              <span className="topbar-title">
-                <span className="mobile-brand">
-                  <Brand />
-                </span>
-                <span className="breadcrumb">
-                  工作空间<span>/</span>
-                </span>
-                <span className="topbar-page-name">产品助手</span>
-              </span>
-              <div>
-                <span className="topbar-status">
-                  <CircleDot size={13} aria-hidden="true" />
-                  官方资料驱动
-                </span>
-                <span className="user-avatar" aria-hidden="true">
-                  {(user.displayName || user.email).slice(0, 1).toUpperCase()}
-                </span>
-                <span className="user-email">{user.email}</span>
-                <DeleteAction
-                  path="/me"
-                  label="删除账号"
-                  explanation="账号将立即停用，个人照片、会话、记忆和操作引导会随后清除。公共资料会保留。"
-                  onDeleted={refresh}
-                />
-                <Button
-                  type="text"
-                  aria-label="退出登录"
-                  icon={<LogOut size={16} />}
-                  onClick={() => void post('/auth/logout', {}).then(refresh)}
-                >
-                  退出
-                </Button>
-              </div>
-            </header>
-            <Routes>
-              <Route
-                path="/admin"
-                element={
-                  <Suspense fallback={<Spin />}>
-                    <AdminPanel />
-                  </Suspense>
-                }
-              />
-              <Route path="*" element={<HomePage />} />
-            </Routes>
-          </div>
-        </div>
+        <AppShell
+          user={user}
+          admin={admin}
+          onRefresh={refresh}
+          onLogout={() => post('/auth/logout', {}).then(refresh)}
+        >
+          <Routes>
+            <Route
+              path="/admin"
+              element={
+                <Suspense fallback={<Spin />}>
+                  <AdminPanel />
+                </Suspense>
+              }
+            />
+            <Route path="*" element={<HomePage />} />
+          </Routes>
+        </AppShell>
       )}
     </SessionContext.Provider>
   );
@@ -184,23 +95,26 @@ createRoot(document.getElementById('root')!).render(
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: '#185B4A',
+          colorPrimary: '#1D6252',
           colorSuccess: '#247451',
           colorWarning: '#B45309',
           colorError: '#DC2626',
-          colorTextBase: '#1C3028',
-          colorBgLayout: '#F7F8F2',
-          colorBorder: '#DCE3D9',
+          colorTextBase: '#203D34',
+          colorBgLayout: '#F4F5F0',
+          colorBorder: '#DCE4DA',
           borderRadius: 12,
           fontSize: 14,
+          fontFamily:
+            '-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif',
         },
         components: {
-          Button: { controlHeight: 44, primaryShadow: 'none' },
+          Button: { controlHeight: 44, primaryShadow: '0 3px 8px #173e3314' },
           Input: {
             controlHeight: 46,
             activeShadow: '0 0 0 3px rgba(24, 91, 74, 0.1)',
           },
-          Card: { borderRadiusLG: 22 },
+          Card: { borderRadiusLG: 20 },
+          Table: { headerBg: '#F3F6F1', cellPaddingBlockSM: 14 },
         },
       }}
     >

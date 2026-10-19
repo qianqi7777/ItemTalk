@@ -245,6 +245,7 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
       ).status(),
     ).toBe(404);
   }
+  await page.getByRole('button', { name: '打开账号菜单', exact: true }).click();
   await page.getByRole('button', { name: '删除账号', exact: true }).click();
   await expect(
     page.getByRole('dialog', { name: '删除账号', exact: true }),

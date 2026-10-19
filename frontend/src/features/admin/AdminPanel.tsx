@@ -6,12 +6,22 @@ import {
   InputNumber,
   Modal,
   Select,
-  Space,
   Spin,
   Switch,
   Table,
 } from 'antd';
+import {
+  Activity,
+  ArrowDownToLine,
+  Clock3,
+  Layers3,
+  RefreshCw,
+  ShieldCheck,
+  SlidersHorizontal,
+  Zap,
+} from 'lucide-react';
 import { api, ApiError, newKey } from '../../services/api';
+import { RequestTrend } from './RequestTrend';
 
 type Runtime = {
   version: number;
@@ -108,10 +118,15 @@ function Controls({
     }
   };
   return (
-    <Card title={`运行控制 · 版本 ${data.runtime.version}`}>
+    <Card
+      id="runtime-controls"
+      className="admin-controls"
+      title={`运行控制 · 版本 ${data.runtime.version}`}
+      extra={<SlidersHorizontal size={18} aria-hidden="true" />}
+    >
       {error && <Alert type="error" title={error} />}
-      <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-        <label>
+      <div className="control-grid">
+        <label className="control-field">
           全局日调用额度{' '}
           <InputNumber
             aria-label="全局日调用额度"
@@ -123,8 +138,9 @@ function Controls({
               value !== null && setDraft({ ...draft, globalDailyLimit: value })
             }
           />
+          <small>全站共用的每日调用额度</small>
         </label>
-        <label>
+        <label className="control-field">
           默认主体日调用额度{' '}
           <InputNumber
             aria-label="默认主体日调用额度"
@@ -136,9 +152,13 @@ function Controls({
               value !== null && setDraft({ ...draft, subjectDailyLimit: value })
             }
           />
+          <small>同一主体的默认每日调用额度</small>
         </label>
-        <label>
-          暂停领取新的后台业务任务{' '}
+        <div className="control-pause">
+          <div>
+            <strong>暂停领取新的后台业务任务</strong>
+            <p>已运行任务及其子任务继续处理，账号和资产清理不受影响。</p>
+          </div>
           <Switch
             aria-label="暂停新后台任务"
             checked={draft.backgroundPaused}
@@ -147,16 +167,11 @@ function Controls({
               setDraft({ ...draft, backgroundPaused: value })
             }
           />
-        </label>
-        <p>
-          已运行任务及其子任务继续处理；账号和资产清理继续运行。调整额度不会清零计数，额度按
-          UTC 日结算。
-        </p>
-        <label>
+        </div>
+        <label className="control-field control-model">
           新任务使用的文本模型{' '}
           <Select
             aria-label="文本模型方案"
-            style={{ minWidth: 220 }}
             value={draft.chatProfile}
             disabled={busy}
             onChange={(value) => setDraft({ ...draft, chatProfile: value })}
@@ -166,24 +181,29 @@ function Controls({
               label: `${profile.model}${profile.accepted ? '' : '（未验收）'}`,
             }))}
           />
+          <small>只影响新运行；进行中的任务继续使用原配置。</small>
         </label>
-        <p>模型切换只影响新运行；密钥、服务地址及向量模型通过受限配置管理。</p>
-        <Button
-          type="primary"
-          loading={busy}
-          onClick={() =>
-            Modal.confirm({
-              title: '确认修改运行配置',
-              content: '修改将记录审计，并影响后续任务及调用额度。',
-              okText: '确认保存',
-              cancelText: '取消',
-              onOk: submit,
-            })
-          }
-        >
-          保存运行配置
-        </Button>
-      </Space>
+        <div className="control-footer">
+          <p>
+            调整额度不会清零计数，按 UTC 日结算。密钥与服务地址由受限配置管理。
+          </p>
+          <Button
+            type="primary"
+            loading={busy}
+            onClick={() =>
+              Modal.confirm({
+                title: '确认修改运行配置',
+                content: '修改将记录审计，并影响后续任务及调用额度。',
+                okText: '确认保存',
+                cancelText: '取消',
+                onOk: submit,
+              })
+            }
+          >
+            保存运行配置
+          </Button>
+        </div>
+      </div>
     </Card>
   );
 }
@@ -232,118 +252,159 @@ export function AdminPanel() {
       sequence.current++;
     };
   }, [refresh]);
+  const summaries = data
+    ? [
+        {
+          label: '业务请求',
+          value: data.groups
+            .filter((r) => r.kind === 'http')
+            .reduce((n, r) => n + r.count, 0),
+          icon: Activity,
+          note: '所选时间范围内',
+        },
+        {
+          label: '外部调用',
+          value: data.groups
+            .filter((r) => r.kind === 'upstream')
+            .reduce((n, r) => n + r.count, 0),
+          icon: Zap,
+          note: '包含失败与重试',
+        },
+        {
+          label: '向量缓存命中',
+          value: data.groups
+            .filter((r) => r.kind === 'cache' && r.outcome === 'hit')
+            .reduce((n, r) => n + r.count, 0),
+          icon: Layers3,
+          note: '减少重复向量请求',
+        },
+        {
+          label: '排队任务',
+          value: data.queue
+            .filter((r) => r.status === 'queued')
+            .reduce((n, r) => n + r.count, 0),
+          icon: Clock3,
+          note: '当前等待领取',
+        },
+      ]
+    : [];
+  const errors =
+    data?.groups
+      .filter(
+        (row) =>
+          (row.kind === 'upstream' && row.outcome !== 'success') ||
+          (row.kind === 'http' &&
+            (/^[45]\d\d$/.test(row.outcome) ||
+              [
+                'INTERNAL_ERROR',
+                'UPSTREAM_MODEL_ERROR',
+                'AUTH_REQUIRED',
+                'FORBIDDEN',
+                'RATE_LIMITED',
+                'interrupted',
+              ].includes(row.outcome))),
+      )
+      .reduce<Record<string, number>>(
+        (result, row) => ({
+          ...result,
+          [row.outcome]: (result[row.outcome] || 0) + row.count,
+        }),
+        {},
+      ) ?? {};
+  const errorTotal = Object.values(errors).reduce((n, count) => n + count, 0);
   return (
-    <main
-      className="admin-panel"
-      style={{ padding: 24, maxWidth: 1400, margin: 'auto' }}
-    >
-      <Space style={{ marginBottom: 20 }} wrap>
-        <h1>运行管理</h1>
-        <Select
-          aria-label="统计时间范围"
-          value={days}
-          onChange={setDays}
-          options={[
-            { value: 1, label: '最近一天' },
-            { value: 7, label: '最近七天' },
-            { value: 30, label: '最近三十天' },
-          ]}
-        />
-        <Button onClick={() => void refresh()} loading={loading}>
-          刷新数据
-        </Button>
-      </Space>
+    <main className="admin-panel">
+      <header className="admin-header">
+        <div>
+          <span className="eyebrow">运行概览 / OPERATIONS</span>
+          <h1>运行管理</h1>
+          <p>看清用量与任务，让每一次调整都有记录。</p>
+        </div>
+        <div className="admin-header-actions">
+          <Select
+            aria-label="统计时间范围"
+            value={days}
+            onChange={setDays}
+            options={[
+              { value: 1, label: '最近一天' },
+              { value: 7, label: '最近七天' },
+              { value: 30, label: '最近三十天' },
+            ]}
+          />
+          <Button
+            icon={<RefreshCw size={16} aria-hidden="true" />}
+            onClick={() => void refresh()}
+            loading={loading}
+          >
+            刷新数据
+          </Button>
+        </div>
+      </header>
       {error && <Alert type="error" title={error} />}
-      {loading && !data && <Spin />}
+      {loading && !data && (
+        <div className="admin-loading" role="status">
+          <Spin />
+          <p>正在读取运行概况…</p>
+        </div>
+      )}
       {data && (
-        <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+        <div className="admin-content" aria-busy={loading}>
           <Alert
+            className="admin-notice"
             type="info"
+            icon={<ShieldCheck size={19} />}
+            showIcon
             title={data.costNotice}
             description="统计不包含私人问题或模型正文。明细保留30天，日汇总保留一年。"
           />
           <section className="admin-summary" aria-label="运行概况">
-            {[
-              [
-                '业务请求',
-                data.groups
-                  .filter((row) => row.kind === 'http')
-                  .reduce((n, row) => n + row.count, 0),
-              ],
-              [
-                '外部调用',
-                data.groups
-                  .filter((row) => row.kind === 'upstream')
-                  .reduce((n, row) => n + row.count, 0),
-              ],
-              [
-                '向量缓存命中',
-                data.groups
-                  .filter(
-                    (row) => row.kind === 'cache' && row.outcome === 'hit',
-                  )
-                  .reduce((n, row) => n + row.count, 0),
-              ],
-              [
-                '排队任务',
-                data.queue
-                  .filter((row) => row.status === 'queued')
-                  .reduce((n, row) => n + row.count, 0),
-              ],
-            ].map(([label, value]) => (
-              <Card key={label}>
-                <small>{label}</small>
-                <h2>{value}</h2>
+            {summaries.map(({ label, value, icon: Icon, note }) => (
+              <Card key={label} className="stat-card">
+                <div className="stat-heading">
+                  <span>{label}</span>
+                  <Icon size={19} aria-hidden="true" />
+                </div>
+                <strong className="stat-value">{value.toLocaleString()}</strong>
+                <small>{note}</small>
               </Card>
             ))}
           </section>
-          <Card title="请求耗时趋势">
-            {data.trend.filter((row) => row.kind === 'http').length ? (
-              <>
-                <svg
-                  viewBox="0 0 600 100"
-                  role="img"
-                  aria-label="请求P95耗时趋势"
-                  style={{ width: '100%', maxHeight: 150 }}
-                >
-                  <polyline
-                    fill="none"
-                    stroke="#185B4A"
-                    strokeWidth="2"
-                    points={(() => {
-                      const rows = data.trend.filter(
-                        (row) => row.kind === 'http',
-                      );
-                      const maximum = Math.max(
-                        1,
-                        ...rows.map((row) => row.p95_ms),
-                      );
-                      return rows
-                        .map(
-                          (row, index) =>
-                            `${10 + (index * 580) / Math.max(1, rows.length - 1)},${90 - (row.p95_ms * 80) / maximum}`,
-                        )
-                        .join(' ');
-                    })()}
-                  />
-                </svg>
-                <p>
-                  最新小时请求 P95：
-                  {Math.round(
-                    data.trend.filter((row) => row.kind === 'http').at(-1)
-                      ?.p95_ms ?? 0,
-                  )}{' '}
-                  ms
-                </p>
-                <p>
-                  按小时展示请求
-                  P95，时间使用浏览器本地时区。样本不足时不推断容量。
-                </p>
-              </>
-            ) : (
-              <p>暂无请求样本</p>
-            )}
-          </Card>
+          <div className="admin-analysis-grid">
+            <Card title="请求耗时趋势">
+              <RequestTrend points={data.trend} />
+            </Card>
+            <Card
+              title="错误分布"
+              extra={<span className="card-meta">{errorTotal} 次</span>}
+            >
+              {errorTotal ? (
+                <ul className="error-distribution">
+                  {Object.entries(errors)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([label, count]) => (
+                      <li key={label}>
+                        <div>
+                          <span>{label}</span>
+                          <strong>{count}</strong>
+                        </div>
+                        <meter
+                          min={0}
+                          max={errorTotal}
+                          value={count}
+                          aria-label={label}
+                        />
+                      </li>
+                    ))}
+                </ul>
+              ) : (
+                <div className="chart-empty">
+                  <ShieldCheck size={28} aria-hidden="true" />
+                  <strong>暂无错误记录</strong>
+                  <p>这里仅统计所选时间内已记录的失败请求。</p>
+                </div>
+              )}
+            </Card>
+          </div>
           <Card title="请求、检索与模型用量">
             <Table
               size="small"
@@ -406,7 +467,23 @@ export function AdminPanel() {
               scroll={{ x: 450 }}
               columns={[
                 { title: '任务类型', dataIndex: 'job_type' },
-                { title: '状态', dataIndex: 'status' },
+                {
+                  title: '状态',
+                  render: (_, row) => (
+                    <span className={`queue-status queue-${row.status}`}>
+                      {(
+                        {
+                          queued: '排队中',
+                          running: '处理中',
+                          succeeded: '已完成',
+                          failed: '失败',
+                          cancelled: '已取消',
+                          partial_success: '部分完成',
+                        } as Record<string, string>
+                      )[row.status] || row.status}
+                    </span>
+                  ),
+                },
                 { title: '数量', dataIndex: 'count' },
                 {
                   title: '最长等待(秒)',
@@ -416,7 +493,11 @@ export function AdminPanel() {
             />
           </Card>
           <Controls key={data.runtime.version} data={data} saved={refresh} />
-          <Card title="配置修改审计">
+          <Card
+            id="audit-log"
+            title="配置修改审计"
+            extra={<ArrowDownToLine size={18} aria-hidden="true" />}
+          >
             <Table
               size="small"
               rowKey="id"
@@ -435,11 +516,10 @@ export function AdminPanel() {
                 {
                   title: '修改后配置',
                   render: (_, row) => (
-                    <code
-                      style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}
-                    >
-                      {JSON.stringify(row.after_value)}
-                    </code>
+                    <details className="audit-config">
+                      <summary>查看配置</summary>
+                      <pre>{JSON.stringify(row.after_value, null, 2)}</pre>
+                    </details>
                   ),
                 },
               ]}
@@ -463,7 +543,7 @@ export function AdminPanel() {
               </Button>
             )}
           </Card>
-        </Space>
+        </div>
       )}
     </main>
   );
