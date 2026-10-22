@@ -26,7 +26,7 @@ jobs:
       working-directory: frontend
       run: npm run build
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -61,6 +61,14 @@ jobs:
       run: |
         uv run ruff check --config pyproject.toml ../infra/release_manifest.py ../infra/record_ops_failure.py
         uv run ruff format --check --config pyproject.toml ../infra/release_manifest.py ../infra/record_ops_failure.py
+    - name: Install matching PostgreSQL restore clients
+      run: |
+        if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ] || [ ! -x /usr/lib/postgresql/16/bin/pg_restore ]; then
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+        fi
+        /usr/lib/postgresql/16/bin/pg_dump --version
+        /usr/lib/postgresql/16/bin/pg_restore --version
     - name: Create extensions
       run: |
         PGPASSWORD=test psql -h localhost -U itemtalk -d itemtalk_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
@@ -86,6 +94,7 @@ jobs:
         DB_NAME: itemtalk_test
         DB_USER: itemtalk
         DB_PASSWORD: test
+        TEST_PG_BIN: /usr/lib/postgresql/16/bin
       run: uv run pytest -v
   containers:
     runs-on: ubuntu-latest

@@ -25,7 +25,15 @@ import { MessageFeedback } from '../features/feedback/MessageFeedback';
 import { SpeechInput } from '../features/speech/SpeechInput';
 import { DeleteAction } from '../components/DeleteAction';
 
-type QuestionDraft = { content: string; assets: Asset[] };
+type QuestionDraft = {
+  content: string;
+  assets: Asset[];
+  requestKey: string;
+  retryOf?: string;
+  runId?: string;
+};
+const generalLabel = '通用建议 · 未经该型号官方资料核验';
+export type RestoredConversation = MessagePage & { id: string };
 
 function clarificationPhotos(messages: Message[]) {
   const last = messages.at(-1);
@@ -73,24 +81,39 @@ function QuestionImages({ assets }: { assets: Asset[] }) {
 export function ChatPanel({
   product,
   onBusyChange,
+  initialConversation,
+  onConversationChange,
 }: {
   product: ProductInstance;
   onBusyChange?: (busy: boolean) => void;
+  initialConversation?: RestoredConversation;
+  onConversationChange?: (id: string) => void;
 }) {
-  const [conversation, setConversation] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversation, setConversation] = useState(
+    initialConversation?.id || '',
+  );
+  const [messages, setMessages] = useState<Message[]>(
+    initialConversation?.items || [],
+  );
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const [photos, setPhotos] = useState<Asset[]>([]);
+  const [photos, setPhotos] = useState<Asset[]>(
+    initialConversation?.nextCursor
+      ? []
+      : clarificationPhotos(initialConversation?.items || []),
+  );
   const [uploading, setUploading] = useState(false);
   const uploadPending = useRef(false);
   const mounted = useRef(true);
+  const conversationRevision = useRef(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<Conversation[]>([]);
   const [historyQuery, setHistoryQuery] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
-  const [messageCursor, setMessageCursor] = useState<string | null>(null);
+  const [messageCursor, setMessageCursor] = useState<string | null>(
+    initialConversation?.nextCursor || null,
+  );
   useEffect(() => {
     onBusyChange?.(busy || loadingHistory || uploading);
   }, [busy, loadingHistory, uploading, onBusyChange]);
@@ -115,6 +138,7 @@ export function ChatPanel({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      conversationRevision.current += 1;
       controller.current?.abort();
     };
   }, []);
@@ -173,33 +197,44 @@ export function ChatPanel({
   };
   const chooseConversation = async (id: string) => {
     if (uploadPending.current) return;
+    const revision = ++conversationRevision.current;
     // 恢复服务端会话ID与消息页，继续提问时沿用原会话，避免历史断成两段。
     setLoadingHistory(true);
     setError('');
     try {
       const page = await api<MessagePage>(`/conversations/${id}/messages`);
+      if (!mounted.current || revision !== conversationRevision.current) return;
       setConversation(id);
       setMessages(page.items);
       setMessageCursor(page.nextCursor);
       setRunId('');
       setRetryDraft(undefined);
-      setPhotos(clarificationPhotos(page.items));
+      setPhotos(page.nextCursor ? [] : clarificationPhotos(page.items));
       setInput('');
       setHistoryOpen(false);
+      onConversationChange?.(id);
     } catch (error) {
-      setError(error instanceof Error ? error.message : '会话恢复失败');
+      if (mounted.current && revision === conversationRevision.current)
+        setError(error instanceof Error ? error.message : '会话恢复失败');
     } finally {
-      setLoadingHistory(false);
+      if (mounted.current && revision === conversationRevision.current)
+        setLoadingHistory(false);
     }
   };
-  const loadOlder = async () => {
+  const loadMoreMessages = async () => {
     setLoadingHistory(true);
     try {
       const page = await api<MessagePage>(
         `/conversations/${conversation}/messages?cursor=${messageCursor}`,
       );
-      setMessages((old) => [...page.items, ...old]);
+      setMessages((old) => [...old, ...page.items]);
       setMessageCursor(page.nextCursor);
+      if (!page.nextCursor)
+        setPhotos((current) =>
+          current.length
+            ? current
+            : clarificationPhotos([...messages, ...page.items]),
+        );
     } catch (error) {
       setError(error instanceof Error ? error.message : '消息加载失败');
     } finally {
@@ -215,7 +250,26 @@ export function ChatPanel({
       uploadPending.current
     )
       return;
-    const sent: QuestionDraft = { content: question, assets: [...assets] };
+    conversationRevision.current += 1;
+    const request = new AbortController();
+    controller.current = request;
+    const ensureActive = () => {
+      if (request.signal.aborted || !mounted.current)
+        throw new DOMException('回答已停止', 'AbortError');
+    };
+    const retryRequest = retry ? retryDraft : undefined;
+    // 未收到运行编号时重放原请求；已取得编号时由服务端校验重试资格。
+    const sent: QuestionDraft = {
+      content: question,
+      assets: [...assets],
+      requestKey:
+        retryRequest && !retryRequest.runId
+          ? retryRequest.requestKey
+          : newKey(),
+      retryOf: retryRequest?.runId || retryRequest?.retryOf,
+    };
+    let attemptRunId: string | undefined;
+    let questionAppended = retry;
     setBusy(true);
     setError('');
     setDraft('');
@@ -225,19 +279,35 @@ export function ChatPanel({
       setPhotos([]);
       setRetryDraft(undefined);
     }
-    const previous = retry ? runId : undefined;
-    if (!retry) setRunId('');
+    setRunId('');
     try {
       let id = conversation;
+      // 消息接口按时间正序分页；续聊前补齐剩余页，避免新问题夹在历史中间。
+      let cursor = messageCursor;
+      const visited = new Set<string>();
+      while (id && cursor) {
+        if (visited.has(cursor)) throw new Error('历史消息加载异常，请重试');
+        visited.add(cursor);
+        const page = await api<MessagePage>(
+          `/conversations/${id}/messages?cursor=${cursor}`,
+          { signal: request.signal },
+        );
+        ensureActive();
+        setMessages((current) => [...current, ...page.items]);
+        cursor = page.nextCursor;
+        setMessageCursor(cursor);
+      }
       if (!id) {
         const response = await post<{ id: string }>('/conversations', {
           userProductInstanceId: product.id,
         });
+        ensureActive();
         id = response.id;
         setConversation(id);
+        onConversationChange?.(id);
       }
-      controller.current = new AbortController();
-      if (!retry)
+      ensureActive();
+      if (!retry) {
         setMessages((current) => [
           ...current,
           {
@@ -248,59 +318,76 @@ export function ChatPanel({
             assets,
           },
         ]);
+        questionAppended = true;
+      }
       const run = await streamAnswer(
         id,
         question,
         {
           status: (id) => {
+            attemptRunId = id;
             setRunId(id);
           },
           token: (text) => setDraft((current) => current + text),
           citation: (citation) =>
             setCitations((current) => [...current, citation]),
         },
-        controller.current.signal,
-        newKey(),
-        previous,
+        request.signal,
+        sent.requestKey,
+        sent.retryOf,
         assets.map((asset) => asset.id),
       );
+      ensureActive();
+      setRunId(run.id);
       if (run.status === 'completed' && !question.trim() && assets.length)
         setPhotos((current) => (current.length ? current : assets));
       if (run.message) {
         setMessages((current) => [...current, run.message!]);
         setRetryDraft(undefined);
       } else if (run.status !== 'completed') {
-        setRetryDraft(sent);
+        setRetryDraft({ ...sent, runId: run.id });
         setError(
           `回答${run.status === 'cancelled' ? '已停止' : '中断'}，可以重试。`,
         );
       }
     } catch (error) {
-      setError(
-        error instanceof Error && error.name !== 'AbortError'
-          ? error.message
-          : '回答已停止或连接中断',
-      );
-      setRetryDraft(sent);
+      if (mounted.current) {
+        setError(
+          error instanceof Error && error.name !== 'AbortError'
+            ? error.message
+            : '回答已停止或连接中断',
+        );
+        if (questionAppended) setRetryDraft({ ...sent, runId: attemptRunId });
+        else {
+          setInput(sent.content);
+          setPhotos(sent.assets);
+          setRetryDraft(undefined);
+        }
+      }
     } finally {
-      setBusy(false);
-      setDraft('');
-      setCitations([]);
+      if (mounted.current) {
+        setBusy(false);
+        setDraft('');
+        setCitations([]);
+      }
     }
   };
   const stop = async () => {
+    // 本地连接立即中止；取消接口变慢不能阻塞停止，也不能迟到后取消新请求。
+    controller.current?.abort();
     if (conversation && runId)
       await post(
         `/conversations/${conversation}/runs/${runId}/cancel`,
         {},
       ).catch(() => {});
-    controller.current?.abort();
   };
   const recover = async () => {
+    const revision = conversationRevision.current;
     try {
       const run = await api<Run>(
         `/conversations/${conversation}/runs/${runId}`,
       );
+      if (!mounted.current || revision !== conversationRevision.current) return;
       if (run.message) {
         setMessages((current) => [
           ...current.filter((message) => message.id !== run.message!.id),
@@ -314,7 +401,8 @@ export function ChatPanel({
         setRetryDraft(undefined);
       } else setError(run.lastError || `当前回答状态：${run.status}`);
     } catch (error) {
-      setError(error instanceof Error ? error.message : '查询失败');
+      if (mounted.current && revision === conversationRevision.current)
+        setError(error instanceof Error ? error.message : '查询失败');
     }
   };
   return (
@@ -341,6 +429,8 @@ export function ChatPanel({
             disabled={busy || loadingHistory || uploading}
             onBusyChange={setBusy}
             onDeleted={() => {
+              if (!mounted.current) return;
+              conversationRevision.current += 1;
               setConversation('');
               setMessages([]);
               setMessageCursor(null);
@@ -353,6 +443,7 @@ export function ChatPanel({
               setDraft('');
               setCitations([]);
               setError('');
+              onConversationChange?.('');
             }}
           />
         )}
@@ -368,6 +459,7 @@ export function ChatPanel({
         <Button
           disabled={busy || loadingHistory || uploading}
           onClick={() => {
+            conversationRevision.current += 1;
             setConversation('');
             setMessages([]);
             setMessageCursor(null);
@@ -376,6 +468,10 @@ export function ChatPanel({
             setPhotos([]);
             setError('');
             setHistoryOpen(false);
+            setInput('');
+            setDraft('');
+            setCitations([]);
+            onConversationChange?.('');
           }}
         >
           新建会话
@@ -429,9 +525,9 @@ export function ChatPanel({
           <Button
             disabled={busy || uploading}
             loading={loadingHistory}
-            onClick={() => void loadOlder()}
+            onClick={() => void loadMoreMessages()}
           >
-            加载更早消息
+            加载更多消息
           </Button>
         )}
         {!messages.length && (
@@ -471,10 +567,22 @@ export function ChatPanel({
                 <QuestionImages assets={message.assets || []} />
               </>
             ) : (
-              <MessageContent
-                content={message.content || ''}
-                citations={message.citations}
-              />
+              <>
+                {message.answerBasis === 'general' && (
+                  <p className="answer-basis" role="note">
+                    {generalLabel}
+                  </p>
+                )}
+                <MessageContent
+                  content={
+                    message.answerBasis === 'general' &&
+                    message.content?.startsWith(generalLabel + '\n\n')
+                      ? message.content.slice(generalLabel.length + 2)
+                      : message.content || ''
+                  }
+                  citations={message.citations}
+                />
+              </>
             )}
             <div className="citations">
               {message.citations.map((citation) => (
@@ -532,7 +640,7 @@ export function ChatPanel({
                   aria-label="重试回答"
                   disabled={busy || uploading || loadingHistory}
                   onClick={() =>
-                    void send(retryDraft.content, !!runId, retryDraft.assets)
+                    void send(retryDraft.content, true, retryDraft.assets)
                   }
                 >
                   重试

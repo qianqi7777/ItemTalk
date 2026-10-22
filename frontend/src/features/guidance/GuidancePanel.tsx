@@ -120,6 +120,7 @@ export function GuidancePanel({
       >
         操作引导
       </Button>
+      {!open && <p className="tool-description">一步一步，完成设备操作</p>}
       {open && (
         <div className="guidance-content">
           {error && <Alert title={error} type="error" showIcon />}
