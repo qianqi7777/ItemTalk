@@ -13,6 +13,7 @@ from app.parser import parse_document
 from app.security import normalize
 from app.services.products import new_job
 from app.services.queue import LeaseHeartbeat, fail, fenced, finish, progress
+from app.services.source_discovery import allowed_url, discover_candidates, manual_links
 from app.storage import Storage, immutable_key, sha256
 
 
@@ -287,54 +288,95 @@ def research(job):
             {"url": "https://example.invalid/itemtalk-demo", "title": "演示设备官方资料（测试）"}
         ]
     else:
-        results = SearchGateway().search(
-            f"{model['brand_name']} {model['model_code']} {model['region'] or ''} 官方 使用手册"
-        )
         with transaction() as connection:
             known = known_model_sources(connection, model)
-        urls = {result["url"] for result in results}
-        results.extend(result for result in known if result["url"] not in urls)
+        search = SearchGateway()
+        try:
+            results = discover_candidates(model, known, search.search)
+        finally:
+            search.client.close()
     published = 0
-    for result in results[: settings().search_max_results + 5]:
+    problems = set()
+    seen = set()
+    initial_count = len(results)
+    queued = {row["url"] for row in results}
+    for index in range(settings().search_max_results + 5):
+        if index >= len(results):
+            break
+        result = results[index]
         domains = model["official_domains"] or []
-        if not mock and not official_url(result["url"], domains):
+        if result["url"] in seen:
+            continue
+        seen.add(result["url"])
+        if not mock and not allowed_url(result["url"], domains):
             continue
         progress(job, "parsing", 35)
-        if mock:
-            url, mime = result["url"], "text/plain"
-            identity = f"{model['model_code']} {model['region'] or ''} "
-            identity += model["hardware_revision"] or ""
-            data = (identity + "\n长按电源键 3 秒开机。请勿带电拆机。").encode()
-        else:
-            url, mime, data = fetch_public(result["url"])
-        with transaction() as connection:
-            fenced(connection, job)
-            version = persist_document(
-                connection, model, url, result["title"], mime, data, [], False
+        try:
+            if mock:
+                url, mime = result["url"], "text/plain"
+                identity = f"{model['model_code']} {model['region'] or ''} "
+                identity += model["hardware_revision"] or ""
+                data = (identity + "\n长按电源键 3 秒开机。请勿带电拆机。").encode()
+            else:
+                url, mime, data = fetch_public(result["url"])
+                if not allowed_url(url, domains):
+                    problems.add("下载跳转到尚未核验的域名")
+                    continue
+                if mime == "text/html" and index < initial_count:
+                    # Expand only the initial result level; never recursively crawl PDF links.
+                    results.extend(
+                        link
+                        for link in manual_links(url, data, domains)
+                        if link["url"] not in queued
+                    )
+                    queued.update(row["url"] for row in results)
+            with transaction() as connection:
+                fenced(connection, job)
+                version = persist_document(
+                    connection, model, url, result["title"], mime, data, [], False
+                )
+                execute(
+                    connection,
+                    "UPDATE document_versions SET parse_status='pending' WHERE id=:id",
+                    id=version["id"],
+                )
+            payload = {
+                "productModelId": str(model_id),
+                "documentVersionId": str(version["id"]),
+                "buildJobId": str(job["id"]),
+                "buildAttempt": job["attempts"],
+            }
+            trusted = execute_subtask(job, "parse", payload, parse_task)
+            if not trusted:
+                problems.add("资料与型号、地区或版本尚未匹配")
+                continue
+            progress(job, "embedding", 65)
+            execute_subtask(job, "embed", payload, embed_task)
+            published += 1
+        except DomainError as error:
+            if error.code not in {
+                "UPSTREAM_SEARCH_ERROR",
+                "SOURCE_UNVERIFIED",
+                "FILE_TYPE_NOT_ALLOWED",
+                "FILE_TOO_LARGE",
+            }:
+                raise
+            problems.add(
+                "下载或解析失败"
+                if error.code == "UPSTREAM_SEARCH_ERROR"
+                else "资料格式、内容或适用性未通过核验"
             )
-            execute(
-                connection,
-                ("UPDATE document_versions SET parse_status='pending' WHERE id=:id"),
-                id=version["id"],
-            )
-        payload = {
-            "productModelId": str(model_id),
-            "documentVersionId": str(version["id"]),
-            "buildJobId": str(job["id"]),
-            "buildAttempt": job["attempts"],
-        }
-        trusted = execute_subtask(job, "parse", payload, parse_task)
-        if not trusted:
-            continue
-        progress(job, "embedding", 65)
-        execute_subtask(job, "embed", payload, embed_task)
-        published += 1
+    if not model["official_domains"] and not mock:
+        problems.add("品牌官方来源尚未核验")
+    if not results:
+        problems.add("暂未发现可安全读取的官方资料链接")
+    summary = "；".join(sorted(problems)) or "没有找到满足型号、地区和官方来源要求的资料"
     with transaction() as connection:
         finish(
             connection,
             job,
             "succeeded" if published else "partial_success",
-            None if published else "没有找到满足型号、地区和官方来源要求的资料，请完善可信来源配置",
+            None if published else summary + "。仍可提问并获得低风险通用帮助。",
         )
         if published:
             from app.services.manuals import schedule
@@ -362,6 +404,18 @@ def execute_subtask(parent, job_type, payload, handler):
         with LeaseHeartbeat(child):
             return handler(child)
     except Exception as error:
+        if isinstance(error, DomainError) and error.code in {
+            "SOURCE_UNVERIFIED",
+            "FILE_TYPE_NOT_ALLOWED",
+            "FILE_TOO_LARGE",
+        }:
+            # The parent moves on to another document; this immutable failed input
+            # must not leave a queued child whose parent has already completed.
+            with transaction() as connection:
+                fenced(connection, child)
+                execute(
+                    connection, "UPDATE jobs SET max_attempts=attempts WHERE id=:id", id=child["id"]
+                )
         fail(child, error.message if isinstance(error, DomainError) else "资料子任务失败")
         raise
 

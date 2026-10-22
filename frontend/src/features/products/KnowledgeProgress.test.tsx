@@ -3,6 +3,16 @@ import { expect, test } from 'vitest';
 import { KnowledgeProgress } from './KnowledgeProgress';
 import type { ProductInstance } from '../../types/api';
 
+test('资料不足时说明仍可使用通用帮助', () => {
+  render(
+    <KnowledgeProgress
+      product={{ knowledgeStatus: 'partial' } as ProductInstance}
+    />,
+  );
+  expect(screen.getByText(/仍可提问/)).toBeVisible();
+  expect(screen.getByText(/通用建议/)).toBeVisible();
+});
+
 test('显示服务端研究阶段和失败信息', () => {
   const product = { knowledgeStatus: 'parsing' } as ProductInstance;
   render(

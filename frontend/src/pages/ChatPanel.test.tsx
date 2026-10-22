@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
-import { api, post, streamAnswer, upload } from '../services/api';
+import { api, newKey, post, streamAnswer, upload } from '../services/api';
 import type { ProductInstance } from '../types/api';
 import { ChatPanel } from './ChatPanel';
 
@@ -10,11 +10,12 @@ vi.mock('../services/api', () => ({
   post: vi.fn(),
   streamAnswer: vi.fn(),
   upload: vi.fn(),
-  newKey: () => 'draft-key',
+  newKey: vi.fn(() => '00000000-0000-4000-8000-000000000001'),
 }));
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(newKey).mockReturnValue('00000000-0000-4000-8000-000000000001');
   vi.mocked(api).mockResolvedValue({ speechToText: false } as never);
 });
 
@@ -30,12 +31,237 @@ const product: ProductInstance = {
   knowledgeStatus: 'ready',
 };
 
+test('无官方资料的产品仍可提问，历史中的通用建议保持明确标识', () => {
+  render(
+    <ChatPanel
+      product={{ ...product, knowledgeStatus: 'partial' }}
+      initialConversation={{
+        id: 'general-history',
+        nextCursor: null,
+        items: [
+          {
+            id: 'generic-answer',
+            role: 'assistant',
+            content: '先检查电脑的蓝牙设置。',
+            citations: [],
+            answerBasis: 'general',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByText('通用建议 · 未经该型号官方资料核验')).toBeVisible();
+  expect(screen.queryByText('已核验来源')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('提问内容')).toBeEnabled();
+});
+
 test('建议问题只填入草稿，用户发送前不创建会话或调用模型', async () => {
   render(<ChatPanel product={product} />);
   await userEvent.click(screen.getByRole('button', { name: '如何开始使用？' }));
   expect(screen.getByLabelText('提问内容')).toHaveValue('如何开始使用？');
   expect(post).not.toHaveBeenCalled();
   expect(streamAnswer).not.toHaveBeenCalled();
+});
+
+test('查询旧回答期间新建会话，迟到结果不能混入新会话', async () => {
+  let resolve!: (value: unknown) => void;
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/capabilities') return { speechToText: false };
+    if (path === '/conversations/saved/runs/old-run')
+      return new Promise((yes) => {
+        resolve = yes;
+      });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.mocked(streamAnswer).mockImplementationOnce(
+    async (_id, _question, callbacks) => {
+      callbacks.status('old-run', 'running');
+      throw new Error('连接中断');
+    },
+  );
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{ id: 'saved', items: [], nextCursor: null }}
+    />,
+  );
+  await userEvent.type(screen.getByLabelText('提问内容'), '原来的问题');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await userEvent.click(
+    await screen.findByRole('button', { name: '查询结果' }),
+  );
+  await userEvent.click(screen.getByRole('button', { name: '新建会话' }));
+  await act(async () =>
+    resolve({
+      id: 'old-run',
+      status: 'completed',
+      message: {
+        id: 'old-answer',
+        role: 'assistant',
+        content: '旧会话的迟到回答',
+        citations: [],
+      },
+    }),
+  );
+  expect(screen.queryByText('旧会话的迟到回答')).toBeNull();
+});
+
+test('历史会话加载完成前离开页面，迟到结果不能再次导航', async () => {
+  let resolve!: (value: unknown) => void;
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/capabilities') return { speechToText: false };
+    if (path.startsWith('/conversations?'))
+      return {
+        items: [
+          { id: 'saved', title: '旧会话', userProductInstanceId: product.id },
+        ],
+        nextCursor: null,
+      };
+    if (path === '/conversations/saved/messages')
+      return new Promise((yes) => {
+        resolve = yes;
+      });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const onConversationChange = vi.fn();
+  const view = render(
+    <ChatPanel product={product} onConversationChange={onConversationChange} />,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+  await userEvent.click(await screen.findByRole('button', { name: '旧会话' }));
+  view.unmount();
+  await act(async () => resolve({ items: [], nextCursor: null }));
+  expect(onConversationChange).not.toHaveBeenCalled();
+});
+
+test('删除会话完成前离开页面，删除成功不能触发旧页面导航', async () => {
+  let resolve!: (value: unknown) => void;
+  vi.mocked(api).mockImplementation(
+    async (path: string, options?: RequestInit) => {
+      if (path === '/capabilities') return { speechToText: false };
+      if (path === '/conversations/saved' && options?.method === 'DELETE')
+        return new Promise((yes) => {
+          resolve = yes;
+        });
+      throw new Error(`Unexpected request: ${path}`);
+    },
+  );
+  const onConversationChange = vi.fn();
+  const view = render(
+    <ChatPanel
+      product={product}
+      initialConversation={{ id: 'saved', items: [], nextCursor: null }}
+      onConversationChange={onConversationChange}
+    />,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '删除会话' }));
+  await userEvent.type(screen.getByLabelText('输入删除以确认'), '删除');
+  await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
+  view.unmount();
+  await act(async () => resolve(undefined));
+  expect(onConversationChange).not.toHaveBeenCalled();
+});
+
+test('取消接口迟迟未返回时也立即中止本地回答连接', async () => {
+  let signal!: AbortSignal;
+  vi.mocked(post).mockImplementation(async () => new Promise(() => {}));
+  vi.mocked(streamAnswer).mockImplementationOnce(
+    async (_id, _question, callbacks, requestSignal) => {
+      signal = requestSignal;
+      callbacks.status('old-run', 'running');
+      return new Promise((_resolve, reject) => {
+        requestSignal.addEventListener(
+          'abort',
+          () => reject(new DOMException('已取消', 'AbortError')),
+          { once: true },
+        );
+      });
+    },
+  );
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{ id: 'saved', items: [], nextCursor: null }}
+    />,
+  );
+  await userEvent.type(screen.getByLabelText('提问内容'), '原来的问题');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await userEvent.click(screen.getByRole('button', { name: '停止回答' }));
+  expect(signal.aborted).toBe(true);
+  expect(await screen.findByRole('button', { name: '发送问题' })).toBeVisible();
+});
+
+test('收到运行编号前断网，重试沿用原幂等键且不重复提问', async () => {
+  vi.mocked(newKey).mockImplementation(() => crypto.randomUUID());
+  vi.mocked(streamAnswer)
+    .mockRejectedValueOnce(new Error('连接中断'))
+    .mockResolvedValueOnce({
+      id: 'replayed',
+      status: 'completed',
+      message: {
+        id: 'answer',
+        role: 'assistant',
+        content: '恢复后的回答',
+        citations: [],
+      },
+    });
+  const { container } = render(
+    <ChatPanel
+      product={product}
+      initialConversation={{ id: 'saved', items: [], nextCursor: null }}
+    />,
+  );
+  await userEvent.type(screen.getByLabelText('提问内容'), '同一个问题');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await userEvent.click(
+    await screen.findByRole('button', { name: '重试回答' }),
+  );
+  await screen.findByText('恢复后的回答');
+  expect(container.querySelectorAll('.bubble.user')).toHaveLength(1);
+  expect(vi.mocked(streamAnswer).mock.calls[1][4]).toBe(
+    vi.mocked(streamAnswer).mock.calls[0][4],
+  );
+  expect(vi.mocked(streamAnswer).mock.calls[1][5]).toBeUndefined();
+});
+
+test('重试失败运行时再次断网，下一次仍重放同一重试请求', async () => {
+  vi.mocked(newKey).mockImplementation(() => crypto.randomUUID());
+  vi.mocked(streamAnswer)
+    .mockImplementationOnce(async (_id, _question, callbacks) => {
+      callbacks.status('first-failed', 'running');
+      throw new Error('首次中断');
+    })
+    .mockRejectedValueOnce(new Error('重试连接中断'))
+    .mockResolvedValueOnce({
+      id: 'replayed',
+      status: 'completed',
+      message: {
+        id: 'answer',
+        role: 'assistant',
+        content: '重放成功',
+        citations: [],
+      },
+    });
+  const { container } = render(
+    <ChatPanel
+      product={product}
+      initialConversation={{ id: 'saved', items: [], nextCursor: null }}
+    />,
+  );
+  await userEvent.type(screen.getByLabelText('提问内容'), '同一个问题');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await userEvent.click(
+    await screen.findByRole('button', { name: '重试回答' }),
+  );
+  await screen.findByText('重试连接中断');
+  await userEvent.click(screen.getByRole('button', { name: '重试回答' }));
+  await screen.findByText('重放成功');
+  const attempts = vi.mocked(streamAnswer).mock.calls;
+  expect(attempts[1][4]).not.toBe(attempts[0][4]);
+  expect(attempts[2][4]).toBe(attempts[1][4]);
+  expect(attempts[1][5]).toBe('first-failed');
+  expect(attempts[2][5]).toBe('first-failed');
+  expect(container.querySelectorAll('.bubble.user')).toHaveLength(1);
 });
 
 test('历史会话恢复已有消息，继续提问沿用会话而非重新创建', async () => {
@@ -87,7 +313,7 @@ test('历史会话恢复已有消息，继续提问沿用会话而非重新创�
     '继续问',
     expect.any(Object),
     expect.any(AbortSignal),
-    'draft-key',
+    '00000000-0000-4000-8000-000000000001',
     undefined,
     [],
   );
@@ -101,6 +327,164 @@ const photo = {
   kind: 'product_photo',
   readUrl: '/private-photo',
 };
+
+test('直接恢复历史会话后，分页按服务端时间顺序追加消息', async () => {
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/capabilities') return { speechToText: false } as never;
+    if (path === '/conversations/saved/messages?cursor=first')
+      return {
+        items: [
+          { id: 'second', role: 'user', content: '第二条问题', citations: [] },
+        ],
+        nextCursor: null,
+      } as never;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{
+        id: 'saved',
+        items: [
+          { id: 'first', role: 'user', content: '第一条问题', citations: [] },
+        ],
+        nextCursor: 'first',
+      }}
+    />,
+  );
+  expect(screen.getByText('第一条问题')).toBeVisible();
+  await userEvent.click(screen.getByRole('button', { name: '加载更多消息' }));
+  await screen.findByText('第二条问题');
+  expect(
+    screen.getAllByText(/第[一二]条问题/).map((node) => node.textContent),
+  ).toEqual(['第一条问题', '第二条问题']);
+});
+
+test('未读完历史分页时先补齐旧消息，再显示新问题和回答', async () => {
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/capabilities') return { speechToText: false } as never;
+    if (path === '/conversations/saved/messages?cursor=first')
+      return {
+        items: [
+          {
+            id: 'second',
+            role: 'user',
+            content: '第二条旧问题',
+            citations: [],
+          },
+        ],
+        nextCursor: null,
+      } as never;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.mocked(streamAnswer).mockResolvedValueOnce({
+    id: 'run',
+    status: 'completed',
+    message: {
+      id: 'answer',
+      role: 'assistant',
+      content: '新的回答',
+      citations: [],
+    },
+  });
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{
+        id: 'saved',
+        items: [
+          { id: 'first', role: 'user', content: '第一条旧问题', citations: [] },
+        ],
+        nextCursor: 'first',
+      }}
+    />,
+  );
+  await userEvent.type(screen.getByLabelText('提问内容'), '新问题');
+  await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await screen.findByText('新的回答');
+  expect(
+    screen
+      .getAllByText(/第[一二]条旧问题|^新问题$|^新的回答$/)
+      .map((node) => node.textContent),
+  ).toEqual(['第一条旧问题', '第二条旧问题', '新问题', '新的回答']);
+  expect(screen.queryByRole('button', { name: '加载更多消息' })).toBeNull();
+});
+
+test('加载最后一页历史消息时保留用户新上传的图片草稿', async () => {
+  vi.mocked(upload).mockResolvedValue(photo);
+  vi.mocked(api).mockImplementation(async (path: string) => {
+    if (path === '/capabilities') return { speechToText: false } as never;
+    if (path === '/conversations/saved/messages?cursor=first')
+      return {
+        items: [
+          {
+            id: 'last',
+            role: 'assistant',
+            content: '最后一条旧回答',
+            citations: [],
+          },
+        ],
+        nextCursor: null,
+      } as never;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const { container } = render(
+    <ChatPanel
+      product={product}
+      initialConversation={{
+        id: 'saved',
+        items: [
+          { id: 'first', role: 'user', content: '旧问题', citations: [] },
+        ],
+        nextCursor: 'first',
+      }}
+    />,
+  );
+  await userEvent.upload(
+    container.querySelector('input[type="file"]')!,
+    new File(['photo'], 'new.jpg', { type: 'image/jpeg' }),
+  );
+  await screen.findByLabelText('待发送图片');
+  await userEvent.click(screen.getByRole('button', { name: '加载更多消息' }));
+  await screen.findByText('最后一条旧回答');
+  expect(screen.getByLabelText('待发送图片')).toBeVisible();
+});
+
+test.each(['stop', 'unmount'])(
+  '补齐历史期间 %s 后不再发送问题或启动模型',
+  async (action) => {
+    let resolve!: (value: unknown) => void;
+    vi.mocked(api).mockImplementation(async (path: string) => {
+      if (path === '/capabilities') return { speechToText: false } as never;
+      if (path === '/conversations/saved/messages?cursor=first')
+        return new Promise((yes) => {
+          resolve = yes;
+        });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const view = render(
+      <ChatPanel
+        product={product}
+        initialConversation={{
+          id: 'saved',
+          items: [
+            { id: 'first', role: 'user', content: '旧问题', citations: [] },
+          ],
+          nextCursor: 'first',
+        }}
+      />,
+    );
+    await userEvent.type(screen.getByLabelText('提问内容'), '不应发送的新问题');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    if (action === 'stop')
+      await userEvent.click(screen.getByRole('button', { name: '停止回答' }));
+    else view.unmount();
+    await act(async () => resolve({ items: [], nextCursor: null }));
+    expect(streamAnswer).not.toHaveBeenCalled();
+    if (action === 'stop')
+      expect(screen.getByLabelText('提问内容')).toHaveValue('不应发送的新问题');
+  },
+);
 
 test('纯图片不自动提问，澄清后保留图片供下一句补充问题使用', async () => {
   vi.mocked(upload).mockResolvedValue(photo);

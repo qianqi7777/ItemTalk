@@ -58,6 +58,13 @@ export interface Message {
   id: string;
   role: string;
   content: string | null;
+  answerBasis?:
+    | 'verified'
+    | 'general'
+    | 'clarification'
+    | 'refused'
+    | 'insufficient'
+    | null;
   citations: Citation[];
   assets?: Asset[];
   runId?: string | null;

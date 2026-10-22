@@ -24,6 +24,13 @@ export function KnowledgeProgress({
       <Tag color={product.knowledgeStatus === 'ready' ? 'green' : 'gold'}>
         {label}
       </Tag>
+      {['partial', 'failed', 'not_requested'].includes(
+        product.knowledgeStatus,
+      ) && (
+        <p>
+          仍可提问，资料不足时会提供明确标注的低风险通用建议；具体参数与操作需要适用资料。
+        </p>
+      )}
       {!['ready', 'partial', 'failed', 'not_requested'].includes(
         product.knowledgeStatus,
       ) && <Progress percent={job?.progress.percent || 0} status="active" />}

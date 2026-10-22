@@ -3,7 +3,11 @@ import { defineConfig } from '@playwright/test';
 /** 纯界面验收使用内存API响应，无需数据库或真实供应商配置。 */
 export default defineConfig({
   testDir: './tests/e2e',
-  testMatch: 'ui-responsive.spec.ts',
+  testMatch: [
+    'ui-responsive.spec.ts',
+    'history.spec.ts',
+    'general-help.spec.ts',
+  ],
   workers: 1,
   timeout: 60000,
   use: {

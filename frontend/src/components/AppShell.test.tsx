@@ -25,6 +25,20 @@ function shell(admin = true, route = '/admin', logout = vi.fn(async () => {})) {
 }
 
 describe('responsive application navigation', () => {
+  it.each(['/history', '/conversations/saved'])(
+    'exposes history in desktop and mobile navigation at %s',
+    (path) => {
+      shell(false, path);
+      for (const name of ['主导航', '移动页面导航']) {
+        expect(
+          within(screen.getByRole('navigation', { name })).getByRole('link', {
+            name: '历史对话',
+          }),
+        ).toHaveAttribute('aria-current', 'page');
+      }
+    },
+  );
+
   it('has one route entry per desktop destination and marks the actual route', () => {
     shell();
     expect(window.scrollTo).toHaveBeenCalledWith(0, 0);

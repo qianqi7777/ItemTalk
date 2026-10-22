@@ -16,6 +16,8 @@ import { SessionContext } from '../stores/session';
 import type { User } from '../types/api';
 import { AuthPage } from '../pages/AuthPage';
 import { HomePage } from '../pages/HomePage';
+import { HistoryPage } from '../pages/HistoryPage';
+import { ConversationPage } from '../pages/ConversationPage';
 import './styles.css';
 
 const AdminPanel = lazy(() =>
@@ -73,6 +75,11 @@ export function App() {
           onLogout={() => post('/auth/logout', {}).then(refresh)}
         >
           <Routes>
+            <Route path="/history" element={<HistoryPage />} />
+            <Route
+              path="/conversations/:conversationId?"
+              element={<ConversationPage />}
+            />
             <Route
               path="/admin"
               element={

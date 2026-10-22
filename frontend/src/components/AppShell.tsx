@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Alert, Button, Drawer } from 'antd';
 import {
   ArrowUpRight,
@@ -7,6 +7,7 @@ import {
   CircleCheck,
   LayoutDashboard,
   LogOut,
+  MessageCircle,
   PackageSearch,
   ShieldCheck,
   UserRound,
@@ -34,6 +35,8 @@ export function AppShell({
   const [accountError, setAccountError] = useState('');
   const { pathname } = useLocation();
   const management = pathname === '/admin';
+  const history =
+    pathname === '/history' || pathname.startsWith('/conversations');
   // 登录前表单可能已滚动到屏幕下方；进入新空间时重置位置并给键盘一个稳定起点。
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -68,6 +71,15 @@ export function AppShell({
             设备工作区
             <ArrowUpRight size={15} aria-hidden="true" />
           </NavLink>
+          <Link
+            className={`nav-item${history ? ' active' : ''}`}
+            to="/history"
+            aria-current={history ? 'page' : undefined}
+          >
+            <MessageCircle size={19} aria-hidden="true" />
+            历史对话
+            <ArrowUpRight size={15} aria-hidden="true" />
+          </Link>
           {admin && (
             <NavLink className="nav-item" to="/admin">
               <LayoutDashboard size={19} aria-hidden="true" />
@@ -116,7 +128,9 @@ export function AppShell({
             <span className="breadcrumb-separator" aria-hidden="true">
               /
             </span>
-            <span>{management ? '运行管理' : '设备工作区'}</span>
+            <span>
+              {management ? '运行管理' : history ? '历史对话' : '设备工作区'}
+            </span>
           </div>
           <div className="topbar-actions">
             <span className="topbar-status">
@@ -151,6 +165,14 @@ export function AppShell({
           <PackageSearch size={21} aria-hidden="true" />
           <span>设备工作区</span>
         </NavLink>
+        <Link
+          className={history ? 'active' : ''}
+          to="/history"
+          aria-current={history ? 'page' : undefined}
+        >
+          <MessageCircle size={21} aria-hidden="true" />
+          <span>历史对话</span>
+        </Link>
         {admin && (
           <NavLink to="/admin">
             <LayoutDashboard size={21} aria-hidden="true" />

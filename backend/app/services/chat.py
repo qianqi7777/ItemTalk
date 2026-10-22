@@ -10,6 +10,7 @@ from app.errors import DomainError, missing
 from app.grounding import evidence_insufficient, grounded_answer
 from app.safety import risk_of
 from app.security import digest, normalize
+from app.services.general_advice import general_advice, requires_evidence
 from app.services.products import owned, require_assets
 from app.storage import Storage
 
@@ -56,6 +57,11 @@ def message_view(connection, row):
         "id": str(row["id"]),
         "role": row["role"],
         "content": row["content"],
+        "answerBasis": (
+            row.get("answer_basis") or ("verified" if metadata else "insufficient")
+            if row["role"] == "assistant"
+            else None
+        ),
         "runId": str(row["run_id"]) if row["run_id"] else None,
         "createdAt": row["created_at"].isoformat(),
         "citations": metadata,
@@ -100,6 +106,28 @@ def get_run(connection, conversation_id, run_id, user):
     if not run:
         missing("RUN_NOT_FOUND")
     return run
+
+
+def evidence_available(model_id):
+    """No paid query embedding when this product has no eligible evidence at all."""
+    with transaction() as connection:
+        return one(
+            connection,
+            "SELECT EXISTS(SELECT 1 FROM knowledge_chunks k "
+            "JOIN product_models m ON m.id=k.product_model_id "
+            "JOIN document_versions v ON v.id=k.document_version_id "
+            "JOIN documents d ON d.id=v.document_id JOIN sources s ON s.id=d.source_id "
+            "JOIN document_model_links l ON l.document_version_id=v.id AND l.product_model_id=m.id "
+            "WHERE m.id=:model AND m.identity_status='verified' "
+            "AND m.verification_status='verified' "
+            "AND k.verification_status='verified' AND v.verification_status='verified' "
+            "AND s.verification_status='verified' AND l.match_type='exact' "
+            "AND k.embedding_model=:embedding_model AND k.embedding_revision=:revision "
+            "AND k.embedding IS NOT NULL) AS available",
+            model=model_id,
+            embedding_model=settings().embedding_model,
+            revision=settings().embedding_revision,
+        )["available"]
 
 
 def start_run(connection, conversation_id, request, user, key, retry=None):
@@ -372,6 +400,7 @@ def _complete_run(run, on_token=None):
     """外部调用在事务外执行；结果写回时再次确认账号、实例和运行仍有效。"""
     gateway = ModelGateway()
     gap_summary = None
+    answer_basis = "insufficient"
     try:
         with transaction() as connection:
             conversation = owned(
@@ -395,9 +424,14 @@ def _complete_run(run, on_token=None):
                 id=message["id"],
             )
         question = message["content"] or ""
+        has_evidence = (
+            bool(question.strip())
+            and risk_of(question) != "high"
+            and evidence_available(instance["product_model_id"])
+        )
         # 明确危险的文字在读取附件、视觉、向量化或答案生成之前拒绝。
         # 附件本身不是操作目标；纯图片先确认问题，不能从视觉候选猜出步骤并附会官方引用。
-        if assets and question.strip() and risk_of(question) != "high":
+        if assets and question.strip() and risk_of(question) != "high" and has_evidence:
             images = [
                 (Storage().read(asset["object_key"], 10 * 1024 * 1024), asset["mime_type"])
                 for asset in assets
@@ -407,6 +441,7 @@ def _complete_run(run, on_token=None):
                 observation = gateway.identify(question, images, run["user_id"])
                 question += "\n图片描述：" + json_value(observation.model_dump())
         if not question.strip():
+            answer_basis = "clarification"
             answer, citations = (
                 "图片已收到。请补充您想了解的问题，例如充电方法或指示灯异常。"
                 if any(asset["mime_type"].startswith("image/") for asset in assets)
@@ -414,19 +449,26 @@ def _complete_run(run, on_token=None):
                 [],
             )
         elif risk_of(question) == "high":
+            answer_basis = "refused"
             answer, citations = "此操作存在安全风险，请停止操作并联系官方售后或专业人员。", []
         else:
             from app.operations import query_vector
 
-            vector = query_vector(gateway, question, run["user_id"])
-            chunks = retrieve(instance["product_model_id"], question, vector)
+            chunks = []
+            if has_evidence:
+                vector = query_vector(gateway, question, run["user_id"])
+                chunks = retrieve(instance["product_model_id"], question, vector)
             if not chunks:
-                from app.services.gaps import summary_for
+                from app.services.gaps import SUMMARIES, summary_for
 
-                gap_summary = summary_for(gateway, question, run["user_id"])
-                answer, citations = (
-                    "目前没有足够的已核验资料支持回答。请补充准确型号或等待资料核验完成。",
-                    [],
+                gap_summary = (
+                    summary_for(gateway, question, run["user_id"])
+                    if has_evidence
+                    else SUMMARIES["other"]
+                )
+                answer, citations = general_advice(message["content"] or ""), []
+                answer_basis = (
+                    "insufficient" if requires_evidence(message["content"] or "") else "general"
                 )
             else:
                 evidence = [
@@ -494,6 +536,17 @@ def _complete_run(run, on_token=None):
                         citations = [
                             citation_for(chunks[number - 1], number) for number in sorted(retained)
                         ]
+                        answer_basis = "verified" if citations else "insufficient"
+        if (
+            answer_basis == "insufficient"
+            and not citations
+            and not requires_evidence(message["content"] or "")
+        ):
+            answer = (
+                general_advice(message["content"] or "")
+                + "\n\n现有已核验资料不足以支持具体型号结论。"
+            )
+            answer_basis = "general"
         with transaction() as connection:
             owned(connection, "conversations", run["conversation_id"], run["user_id"])
             current = one(
@@ -515,14 +568,15 @@ def _complete_run(run, on_token=None):
                 connection,
                 (
                     "INSERT INTO "
-                    "messages(conversation_id,user_id,role,content,run_id,model_id) "
-                    "VALUES (:c,:u,'assistant',:content,:run,:model) RETURNING *"
+                    "messages(conversation_id,user_id,role,content,run_id,model_id,answer_basis) "
+                    "VALUES (:c,:u,'assistant',:content,:run,:model,:basis) RETURNING *"
                 ),
                 c=run["conversation_id"],
                 u=run["user_id"],
                 content=answer,
                 run=run["id"],
                 model=gateway.config.chat_model,
+                basis=answer_basis,
             )
             for citation in citations:
                 execute(
