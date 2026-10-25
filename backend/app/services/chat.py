@@ -399,11 +399,19 @@ def live_citations(connection, model_id, selected, citations):
     return [citation_for(fresh[UUID(row["knowledgeChunkId"])], row["rank"]) for row in citations]
 
 
-def complete_run(run, on_token=None):
+def complete_run(run, on_token=None, on_status=None):
+    import time
+
+    from app.deadlines import request_scope
     from app.operations import snapshot
 
-    with snapshot(run.get("runtime_snapshot")):
-        result = _complete_run(run, on_token)
+    with (
+        snapshot(run.get("runtime_snapshot")),
+        request_scope(
+            time.monotonic() + settings().chat_timeout_seconds, lambda: run_cancelled(run)
+        ),
+    ):
+        result = _complete_run(run, on_token, on_status)
     # 供应商流式增量可能最终被引用核验删除/替换。只在事务提交后发送最终正文，
     # 避免SSE暂时展示无依据内容，或与刷新后的持久化回答不一致。
     if on_token and result.get("message"):
@@ -413,11 +421,25 @@ def complete_run(run, on_token=None):
     return result
 
 
-def _complete_run(run, on_token=None):
+def run_cancelled(run):
+    try:
+        with transaction() as connection:
+            current = one(
+                connection, "SELECT status FROM assistant_runs WHERE id=:id", id=run["id"]
+            )
+        return not current or current["status"] != "running"
+    except DomainError as error:
+        if error.status == 401:
+            return True
+        raise
+
+
+def _complete_run(run, on_token=None, on_status=None):
     """外部调用在事务外执行；结果写回时再次确认账号、实例和运行仍有效。"""
     gateway = ModelGateway()
     gap_summary = None
     answer_basis = "insufficient"
+    web_lookup = None
     try:
         with transaction() as connection:
             conversation = owned(
@@ -472,7 +494,7 @@ def _complete_run(run, on_token=None):
             from app.operations import query_vector
 
             chunks = []
-            if has_evidence:
+            if has_evidence and not run.get("force_web_search"):
                 vector = query_vector(gateway, question, run["user_id"])
                 chunks = retrieve(instance["product_model_id"], question, vector)
             if not chunks:
@@ -555,6 +577,23 @@ def _complete_run(run, on_token=None):
                         ]
                         answer_basis = "verified" if citations else "insufficient"
         if (
+            question.strip()
+            and risk_of(question) != "high"
+            and answer_basis not in {"verified", "clarification", "refused"}
+        ):
+            from app.services.web_answer import answer_from_web
+
+            web_answer, web_basis, web_lookup = answer_from_web(
+                run,
+                instance,
+                message["content"] or "",
+                gateway,
+                lambda: run_cancelled(run),
+                on_status,
+            )
+            if web_answer:
+                answer, answer_basis, citations = web_answer, web_basis, []
+        if (
             answer_basis == "insufficient"
             and not citations
             and not requires_evidence(message["content"] or "")
@@ -585,8 +624,9 @@ def _complete_run(run, on_token=None):
                 connection,
                 (
                     "INSERT INTO "
-                    "messages(conversation_id,user_id,role,content,run_id,model_id,answer_basis) "
-                    "VALUES (:c,:u,'assistant',:content,:run,:model,:basis) RETURNING *"
+                    "messages(conversation_id,user_id,role,content,run_id,model_id,"
+                    "answer_basis,web_lookup) VALUES (:c,:u,'assistant',:content,:run,"
+                    ":model,:basis,CAST(:web AS jsonb)) RETURNING *"
                 ),
                 c=run["conversation_id"],
                 u=run["user_id"],
@@ -594,6 +634,7 @@ def _complete_run(run, on_token=None):
                 run=run["id"],
                 model=gateway.config.chat_model,
                 basis=answer_basis,
+                web=json_value(web_lookup) if web_lookup is not None else None,
             )
             for citation in citations:
                 execute(

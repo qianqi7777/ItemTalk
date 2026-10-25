@@ -607,7 +607,7 @@ class ModelGateway:
                     config.model_base_url.rstrip("/") + "/chat/completions",
                     headers={"Authorization": f"Bearer {key}"},
                     json=payload,
-                    timeout=config.chat_timeout_seconds,
+                    timeout=remaining(config.chat_timeout_seconds),
                 ) as response:
                     if response.status_code == 429 or response.status_code >= 500:
                         outcome = str(response.status_code)
@@ -667,7 +667,7 @@ class SearchGateway:
     def __init__(self, client=None):
         self.client = client or httpx.Client(follow_redirects=False)
 
-    def search(self, query, *, timeout=None, max_attempts=None):
+    def search(self, query, *, timeout=None, max_attempts=None, subject="search"):
         config = settings()
         if config.search_provider != "bocha" or not config.search_api_key.get_secret_value():
             raise DomainError(503, "UPSTREAM_SEARCH_ERROR", "搜索服务未配置")
@@ -675,7 +675,7 @@ class SearchGateway:
         for attempt in range(attempts):
             started, outcome = time.perf_counter(), "error"
             try:
-                ModelGateway().budget("search")
+                ModelGateway().budget(subject)
                 response = self.client.post(
                     config.search_base_url,
                     timeout=remaining(timeout or config.search_timeout_seconds),

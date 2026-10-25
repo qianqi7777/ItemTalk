@@ -941,14 +941,21 @@ def stream(
             if created:
 
                 def emit_token(chunk):
-                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                    loop.call_soon_threadsafe(queue.put_nowait, ("token", {"text": chunk}))
 
-                task = asyncio.create_task(asyncio.to_thread(chat.complete_run, run, emit_token))
+                def emit_status(stage):
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait, ("status", {"runId": str(run["id"]), "status": stage})
+                    )
+
+                task = asyncio.create_task(
+                    asyncio.to_thread(chat.complete_run, run, emit_token, emit_status)
+                )
                 while not task.done() or not queue.empty():
                     try:
-                        chunk = await asyncio.wait_for(queue.get(), timeout=0.2)
-                        emitted = True
-                        yield event("token", {"text": chunk})
+                        kind, payload = await asyncio.wait_for(queue.get(), timeout=0.2)
+                        emitted = emitted or kind == "token"
+                        yield event(kind, payload)
                     except TimeoutError:
                         if loop.time() - heartbeat_at >= 10:
                             with transaction() as connection:

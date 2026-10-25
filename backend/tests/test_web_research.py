@@ -113,6 +113,12 @@ def test_unreadable_result_does_not_turn_search_title_into_evidence(sources):
     assert not result["sources"] and result["reason"] == "unreadable"
 
 
+def test_matching_search_title_cannot_override_wrong_product_in_body(sources):
+    _, _, rows, pages = sources
+    pages[rows[0]["url"]] = "Other Pro1000 蓝牙连接教程，选择其他设备。"
+    assert not research()["sources"]
+
+
 def test_sensitive_steps_reject_third_party_even_when_text_matches(sources):
     result = web.research(
         MODEL, "如何刷固件？", user="test", cancelled=lambda: False, deadline=time.monotonic() + 40

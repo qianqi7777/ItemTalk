@@ -115,11 +115,14 @@ def safe_candidate(url):
 
 def _match(model, title, body, trusted):
     aliases, _ = identity(model)
-    text = title + "\n" + body[:2500]
+    text = body[:2500]
     match = contains(text, model["model_code"])
     if not match:
         return "wrong_model"
     following = normalize(text)[match.end() : match.end() + 20]
+    title_match = contains(title, model["model_code"])
+    if title_match:
+        following += " " + normalize(title)[title_match.end() : title_match.end() + 20]
     if re.match(
         r"\s*(?:升级版|升级款|v[2-9]\b|upgraded|generation\s*[2-9])", following
     ) and not re.search(r"升级|upgraded|v[2-9]", normalize(model["model_code"])):
@@ -196,7 +199,7 @@ def research(
                 if on_status:
                     on_status("web_searching")
                 rows = search.search(
-                    query, timeout=min(6, deadline - time.monotonic()), max_attempts=1
+                    query, timeout=min(6, deadline - time.monotonic()), max_attempts=1, subject=user
                 )
                 queue = [
                     (row, None)
@@ -280,7 +283,13 @@ def research(
                             "rank": len(result["sources"]) + 1,
                             "title": title,
                             "url": final,
-                            "sourceKind": "official" if trusted else "third_party",
+                            "sourceKind": "official"
+                            if trusted
+                            else (
+                                "unverified_official"
+                                if re.search(r"官方|官网|official", title, re.I)
+                                else "third_party"
+                            ),
                             "fetchedAt": datetime.now(UTC).isoformat(),
                             "contentSha256": hashlib.sha256(data).hexdigest(),
                             "excerpt": excerpt,
