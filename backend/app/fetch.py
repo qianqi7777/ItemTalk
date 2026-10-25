@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from app.config import settings
+from app.deadlines import remaining
 from app.errors import DomainError
 
 
@@ -85,6 +86,7 @@ def fetch_public(url, maximum=50 * 1024 * 1024):
     for _ in range(4):
         parts, addresses = public_addresses(url)
         connection = PinnedHTTPS(parts.hostname, addresses[0])
+        connection.timeout = remaining(15)
         try:
             path = parts.path or "/"
             if parts.query:

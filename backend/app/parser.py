@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.deadlines import remaining
 from app.errors import DomainError
 
 
@@ -65,7 +66,7 @@ def parse_document(data, mime):
             [sys.executable, "-m", "app.parser", "--child"],  # noqa: S603
             input=json.dumps({"data": base64.b64encode(data).decode(), "mime": mime}).encode(),
             capture_output=True,
-            timeout=30,
+            timeout=remaining(30),
             env=environment,
             check=False,
         )
