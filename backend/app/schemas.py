@@ -49,6 +49,7 @@ class IdentifyRequest(Input):
 
 class MessageRequest(Input):
     content: str | None = Field(default=None, min_length=1, max_length=10000)
+    forceWebSearch: bool = False
 
     @model_validator(mode="after")
     def complete(self):

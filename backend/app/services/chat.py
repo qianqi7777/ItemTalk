@@ -57,6 +57,19 @@ def message_view(connection, row):
         "id": str(row["id"]),
         "role": row["role"],
         "content": row["content"],
+        "webLookup": (
+            {key: value for key, value in row["web_lookup"].items() if key != "sources"}
+            if row.get("web_lookup")
+            else None
+        ),
+        "webSources": [
+            {
+                key: value
+                for key, value in source.items()
+                if key not in {"excerpt", "linkedFrom", "linkedUrl"}
+            }
+            for source in (row.get("web_lookup") or {}).get("sources", [])
+        ],
         "answerBasis": (
             row.get("answer_basis") or ("verified" if metadata else "insufficient")
             if row["role"] == "assistant"
@@ -138,9 +151,10 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
     if conversation["status"] != "active":
         raise DomainError(409, "RESOURCE_CONFLICT", "会话已归档")
     execute(connection, "SELECT id FROM conversations WHERE id=:id FOR UPDATE", id=conversation_id)
-    request_hash = digest(
-        {"body": request.model_dump(mode="json"), "retry": str(retry) if retry else None}
-    )
+    body = request.model_dump(mode="json")
+    if not body.get("forceWebSearch"):
+        body.pop("forceWebSearch", None)
+    request_hash = digest({"body": body, "retry": str(retry) if retry else None})
     old = one(
         connection,
         ("SELECT * FROM assistant_runs WHERE conversation_id=:c AND idempotency_key=:k"),
@@ -174,6 +188,7 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         if (
             original["content"] != request.content
             or [row["asset_id"] for row in attached] != request.assetIds
+            or bool(previous.get("force_web_search")) != request.forceWebSearch
         ):
             raise DomainError(409, "IDEMPOTENCY_CONFLICT", "重试必须沿用原始输入")
         input_id = original["id"]
@@ -184,8 +199,9 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         (
             "INSERT INTO "
             "assistant_runs(conversation_id,user_id,status,idempotency_key,requ"
-            "est_hash,input_message_id,retry_of_run_id,started_at,runtime_snapshot)"
-            " VALUES (:c,:u,'running',:key,:hash,:input,:retry,now(),CAST(:snapshot AS jsonb)) "
+            "est_hash,input_message_id,retry_of_run_id,started_at,runtime_snapshot,force_web_search)"
+            " VALUES (:c,:u,'running',:key,:hash,:input,:retry,now(),"
+            "CAST(:snapshot AS jsonb),:force) "
             "RETURNING *"
         ),
         c=conversation_id,
@@ -195,6 +211,7 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         input=input_id,
         retry=retry,
         snapshot=json_value(capture(connection)),
+        force=request.forceWebSearch,
     )
     if not retry:
         execute(
