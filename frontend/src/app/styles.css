@@ -152,6 +152,21 @@ svg {
   font-size: 12px;
   line-height: 1.6;
 }
+.web-lookup-note {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.web-source a {
+  overflow-wrap: anywhere;
+}
+.web-source[data-kind='third_party'],
+.web-source[data-kind='unverified_official'] {
+  border-color: #b89d63;
+}
+.web-research-action {
+  margin-top: 10px;
+}
 .skip-link:focus {
   top: 12px;
 }

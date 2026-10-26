@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { api, newKey, post, streamAnswer, upload } from '../services/api';
 import { CitationCard } from '../components/CitationCard';
+import { WebSourceCard } from '../components/WebSourceCard';
 import { MessageContent } from '../components/MessageContent';
 import type {
   Citation,
@@ -31,8 +32,29 @@ type QuestionDraft = {
   requestKey: string;
   retryOf?: string;
   runId?: string;
+  forceWebSearch?: boolean;
+  sourceMessageId?: string;
+  optimisticId?: string;
 };
 const generalLabel = '通用建议 · 未经该型号官方资料核验';
+const researchStages: Record<string, string> = {
+  web_searching: '正在联网查找…',
+  web_reading: '正在读取资料…',
+  web_verifying: '正在核对型号与来源…',
+  web_answering: '正在依据联网资料回答…',
+  web_cached: '使用近期检索结果…',
+};
+const lookupReasons: Record<string, string> = {
+  no_results: '联网搜索未找到适用资料。',
+  unreadable: '找到链接，但暂时无法读取原文。',
+  wrong_model: '搜索结果未能确认适用于当前型号。',
+  official_required: '这项操作需要适用的官方资料，第三方教程不能替代。',
+  search_unavailable: '联网搜索服务暂时不可用。',
+  timeout: '本次联网查找已超时。',
+  quota: '本次联网请求达到可用额度。',
+  unsupported: '已读取的资料不足以支持具体回答。',
+  model_unavailable: '已查找资料，但回答核验服务暂时不可用。',
+};
 export type RestoredConversation = MessagePage & { id: string };
 
 function clarificationPhotos(messages: Message[]) {
@@ -97,6 +119,7 @@ export function ChatPanel({
   );
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [researchStage, setResearchStage] = useState('');
   const [photos, setPhotos] = useState<Asset[]>(
     initialConversation?.nextCursor
       ? []
@@ -242,7 +265,13 @@ export function ChatPanel({
     }
   };
 
-  const send = async (question = input, retry = false, assets = photos) => {
+  const send = async (
+    question = input,
+    retry = false,
+    assets = photos,
+    forceWebSearch = false,
+    sourceMessageId?: string,
+  ) => {
     if (
       (!question.trim() && !assets.length) ||
       busy ||
@@ -267,14 +296,19 @@ export function ChatPanel({
           ? retryRequest.requestKey
           : newKey(),
       retryOf: retryRequest?.runId || retryRequest?.retryOf,
+      forceWebSearch: retryRequest?.forceWebSearch || forceWebSearch,
+      sourceMessageId: retryRequest?.sourceMessageId || sourceMessageId,
+      optimisticId: retryRequest?.optimisticId,
     };
     let attemptRunId: string | undefined;
-    let questionAppended = retry;
+    let questionAppended = retry || Boolean(sent.sourceMessageId);
+    let optimisticId: string | undefined = retryRequest?.optimisticId;
     setBusy(true);
+    setResearchStage('');
     setError('');
     setDraft('');
     setCitations([]);
-    if (!retry) {
+    if (!retry && !sent.sourceMessageId) {
       setInput('');
       setPhotos([]);
       setRetryDraft(undefined);
@@ -307,11 +341,14 @@ export function ChatPanel({
         onConversationChange?.(id);
       }
       ensureActive();
-      if (!retry) {
+      if (!retry && !sent.sourceMessageId) {
+        const appendedId = newKey();
+        optimisticId = appendedId;
+        sent.optimisticId = appendedId;
         setMessages((current) => [
           ...current,
           {
-            id: newKey(),
+            id: appendedId,
             role: 'user',
             content: question,
             citations: [],
@@ -320,13 +357,14 @@ export function ChatPanel({
         ]);
         questionAppended = true;
       }
-      const run = await streamAnswer(
+      const requestArgs: Parameters<typeof streamAnswer> = [
         id,
         question,
         {
-          status: (id) => {
+          status: (id, stage) => {
             attemptRunId = id;
             setRunId(id);
+            setResearchStage(researchStages[stage] || '');
           },
           token: (text) => setDraft((current) => current + text),
           citation: (citation) =>
@@ -336,13 +374,22 @@ export function ChatPanel({
         sent.requestKey,
         sent.retryOf,
         assets.map((asset) => asset.id),
-      );
+      ];
+      if (sent.forceWebSearch) requestArgs.push(true, sent.sourceMessageId);
+      const run = await streamAnswer(...requestArgs);
       ensureActive();
       setRunId(run.id);
       if (run.status === 'completed' && !question.trim() && assets.length)
         setPhotos((current) => (current.length ? current : assets));
       if (run.message) {
-        setMessages((current) => [...current, run.message!]);
+        setMessages((current) => [
+          ...current.map((message) =>
+            message.id === optimisticId && run.inputMessageId
+              ? { ...message, id: run.inputMessageId }
+              : message,
+          ),
+          run.message!,
+        ]);
         setRetryDraft(undefined);
       } else if (run.status !== 'completed') {
         setRetryDraft({ ...sent, runId: run.id });
@@ -390,7 +437,13 @@ export function ChatPanel({
       if (!mounted.current || revision !== conversationRevision.current) return;
       if (run.message) {
         setMessages((current) => [
-          ...current.filter((message) => message.id !== run.message!.id),
+          ...current
+            .filter((message) => message.id !== run.message!.id)
+            .map((message) =>
+              message.id === retryDraft?.optimisticId && run.inputMessageId
+                ? { ...message, id: run.inputMessageId }
+                : message,
+            ),
           run.message!,
         ]);
         if (retryDraft && !retryDraft.content.trim())
@@ -553,7 +606,7 @@ export function ChatPanel({
             </div>
           </div>
         )}
-        {messages.map((message) => (
+        {messages.map((message, index) => (
           <article className={`bubble ${message.role}`} key={message.id}>
             <span className="speaker">
               {message.role !== 'user' && (
@@ -568,6 +621,41 @@ export function ChatPanel({
               </>
             ) : (
               <>
+                {message.answerBasis === 'web' && (
+                  <p className="answer-basis" role="note">
+                    基于联网资料
+                  </p>
+                )}
+                {message.webLookup?.reason &&
+                  lookupReasons[message.webLookup.reason] && (
+                    <p className="web-lookup-note">
+                      {lookupReasons[message.webLookup.reason]}
+                    </p>
+                  )}
+                {message.webLookup?.cached && (
+                  <p className="web-lookup-note">
+                    使用近期检索结果 ·{' '}
+                    {new Date(message.webLookup.searchedAt).toLocaleString(
+                      'zh-CN',
+                    )}
+                  </p>
+                )}
+                {message.webLookup?.conflict && (
+                  <p className="web-lookup-note">
+                    待确认型号：
+                    <a
+                      href={
+                        /^https:\/\//i.test(message.webLookup.conflict.url)
+                          ? message.webLookup.conflict.url
+                          : undefined
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {message.webLookup.conflict.title}
+                    </a>
+                  </p>
+                )}
                 {message.answerBasis === 'general' && (
                   <p className="answer-basis" role="note">
                     {generalLabel}
@@ -580,11 +668,18 @@ export function ChatPanel({
                       ? message.content.slice(generalLabel.length + 2)
                       : message.content || ''
                   }
-                  citations={message.citations}
+                  citations={
+                    message.answerBasis === 'web'
+                      ? message.webSources || []
+                      : message.citations
+                  }
                 />
               </>
             )}
             <div className="citations">
+              {message.webSources?.map((source) => (
+                <WebSourceCard source={source} key={source.id} />
+              ))}
               {message.citations.map((citation) => (
                 <CitationCard
                   citation={citation}
@@ -593,7 +688,41 @@ export function ChatPanel({
               ))}
             </div>
             {message.role === 'assistant' && (
-              <MessageFeedback message={message} />
+              <>
+                <MessageFeedback message={message} />
+                {messages
+                  .slice(0, index)
+                  .some(
+                    (item) => item.role === 'user' && item.content?.trim(),
+                  ) && (
+                  <Button
+                    size="small"
+                    className="web-research-action"
+                    disabled={busy || loadingHistory || uploading}
+                    onClick={() => {
+                      const question = message.inputMessageId
+                        ? messages.find(
+                            (item) =>
+                              item.id === message.inputMessageId &&
+                              item.role === 'user',
+                          )
+                        : [...messages.slice(0, index)]
+                            .reverse()
+                            .find((item) => item.role === 'user');
+                      if (question?.content)
+                        void send(
+                          question.content,
+                          false,
+                          question.assets || [],
+                          true,
+                          question.id,
+                        );
+                    }}
+                  >
+                    重新联网搜索
+                  </Button>
+                )}
+              </>
             )}
           </article>
         ))}
@@ -608,7 +737,7 @@ export function ChatPanel({
                 <MessageContent content={draft} citations={citations} />
               ) : (
                 <>
-                  <Spin size="small" /> 正在检索核验资料…
+                  <Spin size="small" /> {researchStage || '正在检索核验资料…'}
                 </>
               )}
             </div>

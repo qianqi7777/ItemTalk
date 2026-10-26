@@ -54,18 +54,40 @@ export interface Citation {
   verificationStatus: string;
   verifiedAt?: string | null;
 }
+export interface WebSource {
+  id: string;
+  rank: number;
+  title: string;
+  url: string;
+  sourceKind: 'official' | 'third_party' | 'unverified_official';
+  fetchedAt: string;
+  pageStart: number | null;
+  pageEnd: number | null;
+}
+export interface WebLookup {
+  status: string;
+  reason: string | null;
+  searchedAt: string;
+  queryKey: string;
+  cached: boolean;
+  conflict?: { title: string; url: string };
+}
 export interface Message {
   id: string;
+  inputMessageId?: string | null;
   role: string;
   content: string | null;
   answerBasis?:
     | 'verified'
+    | 'web'
     | 'general'
     | 'clarification'
     | 'refused'
     | 'insufficient'
     | null;
   citations: Citation[];
+  webLookup?: WebLookup | null;
+  webSources?: WebSource[];
   assets?: Asset[];
   runId?: string | null;
   feedback?: {
@@ -148,6 +170,7 @@ export interface Guidance {
 }
 export interface Run {
   id: string;
+  inputMessageId?: string;
   status: string;
   message?: Message | null;
   lastError?: string | null;

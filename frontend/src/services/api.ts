@@ -89,6 +89,8 @@ export async function streamAnswer(
   key: string,
   retry?: string,
   assetIds: string[] = [],
+  forceWebSearch = false,
+  sourceMessageId?: string,
 ): Promise<Run> {
   const response = await fetch(
     `${apiBase}/conversations/${conversationId}/stream`,
@@ -106,6 +108,8 @@ export async function streamAnswer(
       body: JSON.stringify({
         ...(content.trim() ? { content } : {}),
         ...(assetIds.length ? { assetIds } : {}),
+        ...(forceWebSearch ? { forceWebSearch: true } : {}),
+        ...(sourceMessageId ? { sourceMessageId } : {}),
       }),
     },
   );

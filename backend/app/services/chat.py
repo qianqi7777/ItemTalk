@@ -57,6 +57,30 @@ def message_view(connection, row):
         "id": str(row["id"]),
         "role": row["role"],
         "content": row["content"],
+        "inputMessageId": (
+            str(
+                one(
+                    connection,
+                    "SELECT input_message_id FROM assistant_runs WHERE id=:id",
+                    id=row["run_id"],
+                )["input_message_id"]
+            )
+            if row["role"] == "assistant" and row.get("run_id")
+            else None
+        ),
+        "webLookup": (
+            {key: value for key, value in row["web_lookup"].items() if key != "sources"}
+            if row.get("web_lookup")
+            else None
+        ),
+        "webSources": [
+            {
+                key: value
+                for key, value in source.items()
+                if key not in {"excerpt", "linkedFrom", "linkedUrl"}
+            }
+            for source in (row.get("web_lookup") or {}).get("sources", [])
+        ],
         "answerBasis": (
             row.get("answer_basis") or ("verified" if metadata else "insufficient")
             if row["role"] == "assistant"
@@ -84,6 +108,7 @@ def run_view(connection, run):
     )
     return {
         "id": str(run["id"]),
+        "inputMessageId": str(run["input_message_id"]),
         "conversationId": str(run["conversation_id"]),
         "status": run["status"],
         "startedAt": run["started_at"].isoformat(),
@@ -138,9 +163,12 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
     if conversation["status"] != "active":
         raise DomainError(409, "RESOURCE_CONFLICT", "会话已归档")
     execute(connection, "SELECT id FROM conversations WHERE id=:id FOR UPDATE", id=conversation_id)
-    request_hash = digest(
-        {"body": request.model_dump(mode="json"), "retry": str(retry) if retry else None}
-    )
+    body = request.model_dump(mode="json")
+    if not body.get("forceWebSearch"):
+        body.pop("forceWebSearch", None)
+    if body.get("sourceMessageId") is None:
+        body.pop("sourceMessageId", None)
+    request_hash = digest({"body": body, "retry": str(retry) if retry else None})
     old = one(
         connection,
         ("SELECT * FROM assistant_runs WHERE conversation_id=:c AND idempotency_key=:k"),
@@ -174,8 +202,31 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         if (
             original["content"] != request.content
             or [row["asset_id"] for row in attached] != request.assetIds
+            or bool(previous.get("force_web_search")) != request.forceWebSearch
         ):
             raise DomainError(409, "IDEMPOTENCY_CONFLICT", "重试必须沿用原始输入")
+        input_id = original["id"]
+    elif request.sourceMessageId:
+        original = one(
+            connection,
+            "SELECT * FROM messages WHERE id=:id AND conversation_id=:c "
+            "AND user_id=:u AND role='user'",
+            id=request.sourceMessageId,
+            c=conversation_id,
+            u=user,
+        )
+        if not original:
+            missing()
+        attached = many(
+            connection,
+            "SELECT asset_id FROM message_attachments WHERE message_id=:id ORDER BY sort_order",
+            id=original["id"],
+        )
+        if (
+            original["content"] != request.content
+            or [r["asset_id"] for r in attached] != request.assetIds
+        ):
+            raise DomainError(409, "IDEMPOTENCY_CONFLICT", "重新搜索必须使用同一原问题与附件")
         input_id = original["id"]
     else:
         input_id = uuid4()
@@ -184,8 +235,9 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         (
             "INSERT INTO "
             "assistant_runs(conversation_id,user_id,status,idempotency_key,requ"
-            "est_hash,input_message_id,retry_of_run_id,started_at,runtime_snapshot)"
-            " VALUES (:c,:u,'running',:key,:hash,:input,:retry,now(),CAST(:snapshot AS jsonb)) "
+            "est_hash,input_message_id,retry_of_run_id,started_at,runtime_snapshot,force_web_search)"
+            " VALUES (:c,:u,'running',:key,:hash,:input,:retry,now(),"
+            "CAST(:snapshot AS jsonb),:force) "
             "RETURNING *"
         ),
         c=conversation_id,
@@ -195,8 +247,9 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         input=input_id,
         retry=retry,
         snapshot=json_value(capture(connection)),
+        force=request.forceWebSearch,
     )
-    if not retry:
+    if not retry and not request.sourceMessageId:
         execute(
             connection,
             (
@@ -382,11 +435,19 @@ def live_citations(connection, model_id, selected, citations):
     return [citation_for(fresh[UUID(row["knowledgeChunkId"])], row["rank"]) for row in citations]
 
 
-def complete_run(run, on_token=None):
+def complete_run(run, on_token=None, on_status=None):
+    import time
+
+    from app.deadlines import request_scope
     from app.operations import snapshot
 
-    with snapshot(run.get("runtime_snapshot")):
-        result = _complete_run(run, on_token)
+    with (
+        snapshot(run.get("runtime_snapshot")),
+        request_scope(
+            time.monotonic() + settings().chat_timeout_seconds, lambda: run_cancelled(run)
+        ),
+    ):
+        result = _complete_run(run, on_token, on_status)
     # 供应商流式增量可能最终被引用核验删除/替换。只在事务提交后发送最终正文，
     # 避免SSE暂时展示无依据内容，或与刷新后的持久化回答不一致。
     if on_token and result.get("message"):
@@ -396,11 +457,25 @@ def complete_run(run, on_token=None):
     return result
 
 
-def _complete_run(run, on_token=None):
+def run_cancelled(run):
+    try:
+        with transaction() as connection:
+            current = one(
+                connection, "SELECT status FROM assistant_runs WHERE id=:id", id=run["id"]
+            )
+        return not current or current["status"] != "running"
+    except DomainError as error:
+        if error.status == 401:
+            return True
+        raise
+
+
+def _complete_run(run, on_token=None, on_status=None):
     """外部调用在事务外执行；结果写回时再次确认账号、实例和运行仍有效。"""
     gateway = ModelGateway()
     gap_summary = None
     answer_basis = "insufficient"
+    web_lookup = None
     try:
         with transaction() as connection:
             conversation = owned(
@@ -455,7 +530,7 @@ def _complete_run(run, on_token=None):
             from app.operations import query_vector
 
             chunks = []
-            if has_evidence:
+            if has_evidence and not run.get("force_web_search"):
                 vector = query_vector(gateway, question, run["user_id"])
                 chunks = retrieve(instance["product_model_id"], question, vector)
             if not chunks:
@@ -538,6 +613,23 @@ def _complete_run(run, on_token=None):
                         ]
                         answer_basis = "verified" if citations else "insufficient"
         if (
+            question.strip()
+            and risk_of(question) != "high"
+            and answer_basis not in {"verified", "clarification", "refused"}
+        ):
+            from app.services.web_answer import answer_from_web
+
+            web_answer, web_basis, web_lookup = answer_from_web(
+                run,
+                instance,
+                message["content"] or "",
+                gateway,
+                lambda: run_cancelled(run),
+                on_status,
+            )
+            if web_answer:
+                answer, answer_basis, citations = web_answer, web_basis, []
+        if (
             answer_basis == "insufficient"
             and not citations
             and not requires_evidence(message["content"] or "")
@@ -568,8 +660,9 @@ def _complete_run(run, on_token=None):
                 connection,
                 (
                     "INSERT INTO "
-                    "messages(conversation_id,user_id,role,content,run_id,model_id,answer_basis) "
-                    "VALUES (:c,:u,'assistant',:content,:run,:model,:basis) RETURNING *"
+                    "messages(conversation_id,user_id,role,content,run_id,model_id,"
+                    "answer_basis,web_lookup) VALUES (:c,:u,'assistant',:content,:run,"
+                    ":model,:basis,CAST(:web AS jsonb)) RETURNING *"
                 ),
                 c=run["conversation_id"],
                 u=run["user_id"],
@@ -577,6 +670,7 @@ def _complete_run(run, on_token=None):
                 run=run["id"],
                 model=gateway.config.chat_model,
                 basis=answer_basis,
+                web=json_value(web_lookup) if web_lookup is not None else None,
             )
             for citation in citations:
                 execute(
