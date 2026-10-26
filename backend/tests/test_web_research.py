@@ -369,3 +369,16 @@ def test_official_search_includes_every_registered_domain(sources, monkeypatch):
         deadline=time.monotonic() + 40,
     )
     assert result["sources"] and result["sources"][0]["sourceKind"] == "official"
+
+
+def test_chinese_brand_can_touch_latin_model_without_whitespace():
+    model = {**MODEL, "brand_name": "迈从", "model_code": "G3"}
+    assert web._match(model, "迈从G3鼠标说明书", "迈从G3鼠标蓝牙配对方法", False) == "matched"
+
+
+def test_other_chinese_brand_touching_model_still_reports_conflict():
+    model = {**MODEL, "brand_name": "迈从", "model_code": "G3MPro"}
+    assert (
+        web._match(model, "漫步者G3MPro说明书", "漫步者G3MPro蓝牙连接方法", False)
+        == "identity_conflict"
+    )

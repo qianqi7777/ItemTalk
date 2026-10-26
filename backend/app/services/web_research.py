@@ -61,8 +61,14 @@ def identity(model):
 
 
 def contains(text, value):
-    pattern = r"[\s_-]*".join(re.escape(c) for c in normalize(value) if c not in " -_")
-    return re.search(r"(?<![a-z0-9])" + pattern + r"(?![a-z0-9])", normalize(text))
+    characters = [c for c in normalize(value) if c not in " -_"]
+    if not characters:
+        return None
+    pattern = r"[\s_-]*".join(re.escape(c) for c in characters)
+    # Chinese brand names commonly touch Latin model codes without a word separator.
+    prefix = r"(?<![a-z0-9])" if re.fullmatch(r"[a-z0-9]", characters[0]) else ""
+    suffix = r"(?![a-z0-9])" if re.fullmatch(r"[a-z0-9]", characters[-1]) else ""
+    return re.search(prefix + pattern + suffix, normalize(text))
 
 
 def queries(model, question):
