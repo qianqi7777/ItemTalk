@@ -667,7 +667,9 @@ class SearchGateway:
     def __init__(self, client=None):
         self.client = client or httpx.Client(follow_redirects=False)
 
-    def search(self, query, *, timeout=None, max_attempts=None, subject="search"):
+    def search(
+        self, query, *, timeout=None, max_attempts=None, subject="search", include_domains=None
+    ):
         config = settings()
         if config.search_provider != "bocha" or not config.search_api_key.get_secret_value():
             raise DomainError(503, "UPSTREAM_SEARCH_ERROR", "搜索服务未配置")
@@ -685,6 +687,7 @@ class SearchGateway:
                         "count": config.search_max_results,
                         "summary": False,
                         "freshness": "noLimit",
+                        **({"include": "|".join(include_domains)} if include_domains else {}),
                     },
                 )
                 if response.status_code == 429 or response.status_code >= 500:

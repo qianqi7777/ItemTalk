@@ -72,6 +72,27 @@ def test_search_rejects_business_errors_even_with_http_200(monkeypatch):
     settings.cache_clear()
 
 
+def test_search_native_domain_filter_covers_all_roots_without_changing_plain_search(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER", "bocha")
+    monkeypatch.setenv("SEARCH_API_KEY", "test-key")
+    settings.cache_clear()
+    monkeypatch.setattr(ModelGateway, "budget", lambda *args: None)
+    payloads = []
+
+    def respond(request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": {"webPages": {"value": []}}})
+
+    gateway = SearchGateway(httpx.Client(transport=httpx.MockTransport(respond)))
+    try:
+        gateway.search("Pro100", include_domains=["primary.example", "secondary.example"])
+        gateway.search("plain query")
+        assert payloads[0]["include"] == "primary.example|secondary.example"
+        assert "include" not in payloads[1]
+    finally:
+        settings.cache_clear()
+
+
 @pytest.mark.parametrize(
     "operation,output",
     [

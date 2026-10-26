@@ -61,8 +61,14 @@ def identity(model):
 
 
 def contains(text, value):
-    pattern = r"[\s_-]*".join(re.escape(c) for c in normalize(value) if c not in " -_")
-    return re.search(r"(?<![a-z0-9])" + pattern + r"(?![a-z0-9])", normalize(text))
+    characters = [c for c in normalize(value) if c not in " -_"]
+    if not characters:
+        return None
+    pattern = r"[\s_-]*".join(re.escape(c) for c in characters)
+    # Chinese brand names commonly touch Latin model codes without a word separator.
+    prefix = r"(?<![a-z0-9])" if re.fullmatch(r"[a-z0-9]", characters[0]) else ""
+    suffix = r"(?![a-z0-9])" if re.fullmatch(r"[a-z0-9]", characters[-1]) else ""
+    return re.search(prefix + pattern + suffix, normalize(text))
 
 
 def queries(model, question):
@@ -93,7 +99,7 @@ def queries(model, question):
                 model.get("hardware_revision"),
                 sorted(model.get("blocked_urls") or []),
                 requires_evidence(question),
-                1,
+                2,
             ],
             ensure_ascii=False,
         ).encode()
@@ -101,9 +107,7 @@ def queries(model, question):
     return (
         [
             f"{name} 说明书",
-            f"site:{domains[0]} {model['model_code']}"
-            if domains
-            else f"{name} user manual support",
+            f"{model['model_code']} {topic}" if domains else f"{name} user manual support",
             public + " 教程",
         ],
         query_key,
@@ -228,7 +232,11 @@ def research(
                 if on_status:
                     on_status("web_searching")
                 rows = search.search(
-                    query, timeout=min(6, deadline - time.monotonic()), max_attempts=1, subject=user
+                    query,
+                    timeout=min(6, deadline - time.monotonic()),
+                    max_attempts=1,
+                    subject=user,
+                    **({"include_domains": domains} if index == 1 and domains else {}),
                 )
 
                 def priority(row):

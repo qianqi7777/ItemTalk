@@ -288,9 +288,9 @@ def test_generic_first_results_do_not_starve_question_specific_search(sources, m
     assert research()["sources"] and len(calls) == 3
 
 
-def test_site_query_does_not_exclude_manual_without_question_keywords():
+def test_official_query_uses_model_and_intent_without_single_site_restriction():
     queries, _, _ = web.queries({**MODEL, "official_domains": ["acme.example"]}, QUESTION)
-    assert queries[1] == "site:acme.example Pro100"
+    assert queries[1] == "Pro100 蓝牙配对"
     assert queries[0] == "Acme Pro100 说明书"
 
 
@@ -334,7 +334,7 @@ def test_site_support_page_and_linked_pdf_share_reserved_budget(sources, monkeyp
                 {"title": "Acme Pro100 规格", "url": "https://acme.example/specs"},
                 {"title": "Acme", "url": url},
             ]
-            if query.startswith("site:")
+            if _kwargs.get("include_domains")
             else []
         )
 
@@ -347,3 +347,38 @@ def test_site_support_page_and_linked_pdf_share_reserved_budget(sources, monkeyp
         deadline=time.monotonic() + 40,
     )
     assert result["sources"] and result["sources"][0]["url"].endswith("Pro100.pdf")
+
+
+def test_official_search_includes_every_registered_domain(sources, monkeypatch):
+    _, _, _, pages = sources
+    url = "https://helpguide.secondary.example/Pro100"
+    pages[url] = "Acme Pro100 蓝牙配对连接方法"
+    domains = ["primary.example", "secondary.example", "regional.example"]
+
+    def search(_self, query, **kwargs):
+        if set(kwargs.get("include_domains") or []) == set(domains):
+            return [{"title": "Acme Pro100 帮助指南", "url": url}]
+        return []
+
+    monkeypatch.setattr(web.SearchGateway, "search", search)
+    result = web.research(
+        {**MODEL, "official_domains": domains},
+        QUESTION,
+        user="test",
+        cancelled=lambda: False,
+        deadline=time.monotonic() + 40,
+    )
+    assert result["sources"] and result["sources"][0]["sourceKind"] == "official"
+
+
+def test_chinese_brand_can_touch_latin_model_without_whitespace():
+    model = {**MODEL, "brand_name": "迈从", "model_code": "G3"}
+    assert web._match(model, "迈从G3鼠标说明书", "迈从G3鼠标蓝牙配对方法", False) == "matched"
+
+
+def test_other_chinese_brand_touching_model_still_reports_conflict():
+    model = {**MODEL, "brand_name": "迈从", "model_code": "G3MPro"}
+    assert (
+        web._match(model, "漫步者G3MPro说明书", "漫步者G3MPro蓝牙连接方法", False)
+        == "identity_conflict"
+    )
