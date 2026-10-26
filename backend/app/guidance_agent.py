@@ -17,7 +17,6 @@ from langgraph.types import interrupt
 
 from app.adapters import ModelGateway
 from app.agent_probe import GatewayChatModel, RestrictedTools
-from app.config import settings
 from app.db import transaction
 from app.errors import DomainError
 from app.schemas import GuidancePlan
@@ -49,8 +48,10 @@ class GuidanceChatModel(GatewayChatModel):
     json_output: bool = True
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        if settings().model_provider != "mock":
-            return super()._generate(messages, stop, run_manager, **kwargs)
+        gateway = ModelGateway()
+        if gateway.config.model_provider != "mock":
+            return super()._generate(messages, stop, run_manager, _gateway=gateway, **kwargs)
+        gateway.close()
         request = next(message for message in messages if isinstance(message, HumanMessage))
         body = json.loads(request.content)
         if not any(isinstance(message, ToolMessage) for message in messages):

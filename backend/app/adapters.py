@@ -29,16 +29,44 @@ ANSWER_SYSTEM_PROMPT = (
 
 
 class ModelGateway:
-    def __init__(self, client=None):
-        self.config = settings()
+    def __init__(self, client=None, *, configuration=None, managed_chat=False):
+        self.config = configuration or settings()
         self._subject = "unattributed"
-        if self.config.v2_enabled:
+        if configuration is None and self.config.v2_enabled:
             with transaction() as connection:
                 selected = operations.capture(connection)
-            self.config = self.config.model_copy(update={"chat_model": selected["chatModel"]})
+                if selected["chatProfile"].startswith("managed_"):
+                    from app.model_configs import resolve_configuration
+
+                    self.config = resolve_configuration(
+                        connection, self.config, selected["chatProfile"]
+                    )
+                    managed_chat = True
+                else:
+                    self.config = self.config.model_copy(
+                        update={"chat_model": selected["chatModel"]}
+                    )
+        self._owns_client = client is None
+        self.managed_chat = managed_chat
         self.client = client or httpx.Client(
             timeout=self.config.model_timeout_seconds, follow_redirects=False
         )
+        self.chat_client = self.client
+        if managed_chat and client is None:
+            from app.model_transport import PublicModelTransport
+
+            self.chat_client = httpx.Client(
+                transport=PublicModelTransport(),
+                timeout=self.config.chat_timeout_seconds,
+                follow_redirects=False,
+                trust_env=False,
+            )
+
+    def close(self):
+        if self.chat_client is not self.client:
+            self.chat_client.close()
+        if self._owns_client:
+            self.client.close()
 
     def budget(self, subject):
         remaining(1)
@@ -70,7 +98,7 @@ class ModelGateway:
         if role == "chat":
             payload = {**payload, "model": config.chat_model}
         provider = config.model_provider if role == "chat" else getattr(config, f"{role}_provider")
-        if provider not in {"dashscope", "deepseek", "hunyuan"}:
+        if provider not in {"dashscope", "deepseek", "hunyuan", "openai_compatible"}:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "模型服务未配置")
         if role == "vision" and provider != "dashscope":
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "此适配器未验证视觉能力")
@@ -79,7 +107,7 @@ class ModelGateway:
         base = config.model_base_url if role == "chat" else getattr(config, f"{role}_base_url")
         secret = config.model_api_key if role == "chat" else getattr(config, f"{role}_api_key")
         key = secret.get_secret_value()
-        if role != "chat" and not key:
+        if role != "chat" and not key and not self.managed_chat:
             # 仅同供应商共享 key；切换文本供应商不能把其密钥发给视觉/向量供应商。
             if provider == config.model_provider:
                 key = config.model_api_key.get_secret_value()
@@ -90,7 +118,7 @@ class ModelGateway:
                 self.budget(self._subject)
             started, outcome, usage = time.perf_counter(), "error", None
             try:
-                response = self.client.post(
+                response = (self.chat_client if role == "chat" else self.client).post(
                     base.rstrip("/") + endpoint,
                     headers={"Authorization": f"Bearer {key}"},
                     json=payload,
@@ -573,7 +601,12 @@ class ModelGateway:
             return
         config = self.config
         key = config.model_api_key.get_secret_value()
-        if not key or config.model_provider not in {"dashscope", "deepseek", "hunyuan"}:
+        if not key or config.model_provider not in {
+            "dashscope",
+            "deepseek",
+            "hunyuan",
+            "openai_compatible",
+        }:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", ("模型服务未配置"))
         payload = {
             "model": config.chat_model,
@@ -602,7 +635,7 @@ class ModelGateway:
                 self.budget(self._subject)
             started, outcome, usage, first = time.perf_counter(), "interrupted", None, None
             try:
-                with self.client.stream(
+                with self.chat_client.stream(
                     "POST",
                     config.model_base_url.rstrip("/") + "/chat/completions",
                     headers={"Authorization": f"Bearer {key}"},

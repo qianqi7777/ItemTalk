@@ -1,0 +1,266 @@
+"""Immutable, tested text-model configurations; secret material never leaves the server."""
+
+import hashlib
+import hmac
+import ipaddress
+import json
+import time
+from typing import Literal
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+import httpx
+from cryptography.fernet import Fernet, InvalidToken
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+from app.config import settings
+from app.db import one
+from app.deadlines import request_scope
+from app.errors import DomainError
+from app.model_transport import PublicModelTransport
+from app.security import decode_token, token_for
+from app.upstream import response_error
+
+
+class ModelConfigInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+    baseUrl: str = Field(min_length=8, max_length=500)
+    protocol: Literal["openai_chat", "dashscope_chat"]
+    model: str = Field(pattern=r"^[a-zA-Z0-9_./:-]{1,100}$")
+    apiKey: SecretStr = Field(min_length=1, max_length=4096)
+
+    @field_validator("baseUrl")
+    @classmethod
+    def safe_base_url(cls, value):
+        try:
+            parts = urlsplit(value)
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+                or parts.port not in (None, 443)
+                or parts.query
+                or parts.fragment
+                or "?" in value
+                or "#" in value
+                or any(c.isspace() or ord(c) < 32 for c in value)
+                or "\\" in value
+                or "%" in parts.netloc
+                or parts.path.rstrip("/").endswith("/chat/completions")
+            ):
+                raise ValueError("invalid base URL")
+            try:
+                address = ipaddress.ip_address(parts.hostname)
+            except ValueError:
+                address = None
+            if address is not None and (
+                not address.is_global or getattr(address, "ipv4_mapped", None)
+            ):
+                raise ValueError("nonpublic address")
+            return value.rstrip("/")
+        except ValueError:
+            raise ValueError(
+                "请填写公网HTTPS API基础地址，不含密钥、查询参数或/chat/completions"
+            ) from None
+
+    @field_validator("apiKey")
+    @classmethod
+    def valid_key(cls, value):
+        if any(c.isspace() or ord(c) < 32 for c in value.get_secret_value()):
+            raise ValueError("API Key不能包含空白字符")
+        return value
+
+
+class ModelConfigSave(ModelConfigInput):
+    testToken: str = Field(min_length=1, max_length=2048)
+
+
+def cipher():
+    try:
+        return Fernet(settings().model_config_encryption_key.get_secret_value().encode())
+    except (ValueError, TypeError):
+        raise DomainError(
+            503, "MODEL_CONFIG_UNAVAILABLE", "服务器尚未配置模型密钥加密，请联系运维"
+        ) from None
+
+
+def encrypt_key(value):
+    return cipher().encrypt(value.encode()).decode()
+
+
+def decrypt_key(value):
+    try:
+        return cipher().decrypt(value.encode()).decode()
+    except (InvalidToken, UnicodeError, ValueError):
+        raise DomainError(
+            503, "MODEL_CONFIG_UNAVAILABLE", "模型配置密钥无法解密，请恢复正确的加密配置"
+        ) from None
+
+
+def fingerprint(value):
+    cipher()  # Fail closed before issuing test proofs if encryption is unavailable.
+    data = {field: getattr(value, field) for field in ModelConfigInput.model_fields}
+    data["apiKey"] = value.apiKey.get_secret_value()
+    return hmac.new(
+        settings().model_config_encryption_key.get_secret_value().encode(),
+        json.dumps(data, sort_keys=True, ensure_ascii=False).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def test_proof(value, actor):
+    return token_for(actor, "model_config_test", fingerprint=fingerprint(value))
+
+
+def verify_proof(value, actor, proof):
+    try:
+        claims = decode_token(proof, "model_config_test")
+        if claims["sub"] != str(actor) or not hmac.compare_digest(
+            claims.get("fingerprint", ""), fingerprint(value)
+        ):
+            raise ValueError("different draft")
+    except (DomainError, ValueError, TypeError):
+        raise DomainError(422, "VALIDATION_ERROR", "配置已变更或测试已过期，请重新测试") from None
+
+
+def apply_configuration(base, value):
+    overrides = dict(
+        model_provider="dashscope" if value.protocol == "dashscope_chat" else "openai_compatible",
+        model_base_url=value.baseUrl,
+        model_api_key=value.apiKey,
+        chat_model=value.model,
+    )
+    for role in ("vision", "embedding", "stt"):
+        if (
+            not getattr(base, f"{role}_api_key").get_secret_value()
+            and getattr(base, f"{role}_provider") == base.model_provider
+        ):
+            overrides[f"{role}_api_key"] = base.model_api_key
+    return base.model_copy(update=overrides)
+
+
+def get_config(connection, profile):
+    row = one(connection, "SELECT itemtalk_model_config(:p) AS value", p=profile)
+    if not row or row["value"] is None:
+        raise DomainError(503, "MODEL_CONFIG_UNAVAILABLE", "当前模型配置不存在，请切回服务器预设")
+    return row["value"]
+
+
+def resolve_configuration(connection, base, profile):
+    row = get_config(connection, profile)
+    value = ModelConfigInput(
+        name=row["name"],
+        baseUrl=row["base_url"],
+        protocol=row["protocol"],
+        model=row["model"],
+        apiKey=decrypt_key(row["encrypted_key"]),
+    )
+    return apply_configuration(base, value)
+
+
+def list_configs(connection):
+    return one(connection, "SELECT itemtalk_model_config_list() AS value")["value"]
+
+
+def encryption_ready():
+    try:
+        cipher()
+        return True
+    except DomainError:
+        return False
+
+
+def save_config(connection, value):
+    return one(
+        connection,
+        "SELECT itemtalk_add_model_config(:p,:n,:b,:w,:m,:k) AS value",
+        p="managed_" + uuid4().hex,
+        n=value.name,
+        b=value.baseUrl,
+        w=value.protocol,
+        m=value.model,
+        k=encrypt_key(value.apiKey.get_secret_value()),
+    )["value"]
+
+
+def probe(value, subject, *, client=None, charge=None):
+    """Three bounded calls with fixed synthetic input; never send an actual user conversation."""
+    from app.adapters import ModelGateway
+
+    cipher()
+    started = time.monotonic()
+    gateway = ModelGateway(configuration=apply_configuration(settings(), value), managed_chat=True)
+    charge = charge or (lambda: gateway.budget(subject))
+    owned = client is None
+    client = client or httpx.Client(transport=PublicModelTransport(), timeout=15, trust_env=False)
+    headers = {"Authorization": "Bearer " + value.apiKey.get_secret_value()}
+    base_payload = {
+        "model": value.model,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": 'Return a JSON object: {"ok":true}.'}],
+    }
+    if value.protocol == "dashscope_chat":
+        base_payload["enable_thinking"] = False
+    checks = []
+    try:
+        with request_scope(started + 45):
+            for kind in ("text", "json", "stream"):
+                charge()
+                payload = dict(base_payload)
+                if kind == "json":
+                    payload["response_format"] = {"type": "json_object"}
+                if kind == "stream":
+                    payload["stream"] = True
+                with client.stream(
+                    "POST",
+                    value.baseUrl + "/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=15,
+                ) as response:
+                    if response.status_code != 200:
+                        # Do not read supplier error bodies into exception/log output.
+                        raise response_error(httpx.Response(response.status_code))
+                    if kind == "stream":
+                        content, complete, size = False, False, 0
+                        for line in response.iter_lines():
+                            size += len(line)
+                            if size > 65536:
+                                raise ValueError("oversized test stream")
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                complete = True
+                                break
+                            event = json.loads(data)
+                            content = content or any(
+                                isinstance(row.get("delta", {}).get("content"), str)
+                                and bool(row["delta"]["content"].strip())
+                                for row in event.get("choices", [])
+                            )
+                        if not content or not complete:
+                            raise ValueError("incomplete stream")
+                    else:
+                        raw = b""
+                        for chunk in response.iter_bytes():
+                            raw += chunk
+                            if len(raw) > 65536:
+                                raise ValueError("oversized test response")
+                        content = json.loads(raw)["choices"][0]["message"]["content"]
+                        if not isinstance(content, str) or not content.strip():
+                            raise ValueError("empty content")
+                        if kind == "json" and json.loads(content) != {"ok": True}:
+                            raise ValueError("invalid structured content")
+                checks.append(kind)
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        raise DomainError(
+            502, "UPSTREAM_MODEL_ERROR", "模型测试失败：请检查协议、JSON或流式输出能力"
+        ) from None
+    finally:
+        if owned:
+            client.close()
+        gateway.close()
+    return {"checks": checks, "durationMs": round((time.monotonic() - started) * 1000)}

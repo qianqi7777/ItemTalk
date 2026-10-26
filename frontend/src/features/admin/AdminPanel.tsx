@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError, newKey } from '../../services/api';
 import { RequestTrend } from './RequestTrend';
+import { ModelConfigs, type ModelConfigListing } from './ModelConfigs';
 
 type Runtime = {
   version: number;
@@ -57,7 +58,12 @@ type Audit = {
 type Overview = {
   groups: Metric[];
   runtime: Runtime;
-  modelProfiles: { id: string; model: string; accepted: boolean }[];
+  modelProfiles: {
+    id: string;
+    model: string;
+    name?: string;
+    accepted: boolean;
+  }[];
   hardLimits: { global: number; subject: number };
   queue: {
     job_type: string;
@@ -178,14 +184,15 @@ function Controls({
             options={data.modelProfiles.map((profile) => ({
               value: profile.id,
               disabled: !profile.accepted,
-              label: `${profile.model}${profile.accepted ? '' : '（未验收）'}`,
+              label: `${profile.name ? `${profile.name} · ` : ''}${profile.model}${profile.accepted ? '' : '（未验收）'}`,
             }))}
           />
           <small>只影响新运行；进行中的任务继续使用原配置。</small>
         </label>
         <div className="control-footer">
           <p>
-            调整额度不会清零计数，按 UTC 日结算。密钥与服务地址由受限配置管理。
+            调整额度不会清零计数，按 UTC
+            日结算。可选择上方新增并测试通过的文本模型配置。
           </p>
           <Button
             type="primary"
@@ -215,17 +222,20 @@ export function AdminPanel() {
   const [next, setNext] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [models, setModels] = useState<ModelConfigListing | null>(null);
   const sequence = useRef(0);
   const refresh = useCallback(async () => {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const [overview, history] = await Promise.all([
+      const [overview, history, configurations] = await Promise.all([
         api<Overview>(`/admin/overview?days=${days}`),
         api<{ items: Audit[]; nextBefore: number | null }>('/admin/audit'),
+        api<ModelConfigListing>('/admin/model-configs'),
       ]);
       if (current !== sequence.current) return;
       setData(overview);
+      setModels(configurations);
       setAudit(history.items);
       setNext(history.nextBefore);
       setError('');
@@ -492,6 +502,13 @@ export function AdminPanel() {
               ]}
             />
           </Card>
+          {models && (
+            <ModelConfigs
+              listing={models}
+              runtime={data.runtime}
+              onSaved={refresh}
+            />
+          )}
           <Controls key={data.runtime.version} data={data} saved={refresh} />
           <Card
             id="audit-log"

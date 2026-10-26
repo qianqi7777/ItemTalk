@@ -71,6 +71,10 @@ def capture(connection):
     profile = row["chatProfile"]
     if profile == "current":
         model = settings().chat_model
+    elif profile.startswith("managed_"):
+        from app.model_configs import get_config
+
+        model = get_config(connection, profile)["model"]
     else:
         selected = settings().model_profiles.get(profile)
         if selected is None or not selected.accepted:
@@ -88,12 +92,20 @@ def snapshot(value):
         active_snapshot.reset(token)
 
 
-def profiles():
-    return [{"id": "current", "model": settings().chat_model, "accepted": True}] + [
+def profiles(connection=None):
+    result = [{"id": "current", "model": settings().chat_model, "accepted": True}] + [
         {"id": key, "model": row.model, "accepted": row.accepted}
         for key, row in settings().model_profiles.items()
         if key != "current"
     ]
+    if connection is not None:
+        from app.model_configs import list_configs
+
+        result += [
+            {"id": row["id"], "model": row["model"], "name": row["name"], "accepted": True}
+            for row in list_configs(connection)
+        ]
+    return result
 
 
 def update_runtime(connection, request):
@@ -103,8 +115,12 @@ def update_runtime(connection, request):
         or request.subjectDailyLimit > settings().runtime_subject_hard_limit
     ):
         raise DomainError(422, "VALIDATION_ERROR", "额度不能超过服务器硬上限")
-    if request.chatProfile not in {p["id"] for p in profiles() if p["accepted"]}:
+    if request.chatProfile not in {p["id"] for p in profiles(connection) if p["accepted"]}:
         raise DomainError(422, "VALIDATION_ERROR", "模型方案尚未验收")
+    if request.chatProfile.startswith("managed_"):
+        from app.model_configs import resolve_configuration
+
+        resolve_configuration(connection, settings(), request.chatProfile)
     changed = one(
         connection,
         "SELECT itemtalk_update_runtime(:v,:g,:s,:p,:m) AS value",
@@ -282,7 +298,7 @@ def overview(connection, days):
         "groups": groups,
         "queue": one(connection, "SELECT itemtalk_admin_queue_stats() AS value")["value"],
         "runtime": runtime(connection),
-        "modelProfiles": profiles(),
+        "modelProfiles": profiles(connection),
         "hardLimits": {
             "global": settings().runtime_global_hard_limit,
             "subject": settings().runtime_subject_hard_limit,

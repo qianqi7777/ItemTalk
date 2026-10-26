@@ -84,6 +84,12 @@ async function fixture(
       return reply({ items: options.product ? [product] : [] });
     if (path.startsWith('/admin/') && !admin)
       return reply({ code: 'FORBIDDEN', message: '需要管理员权限' }, 403);
+    if (path === '/admin/model-configs')
+      return reply({
+        items: [],
+        activeProfile: 'current',
+        encryptionReady: true,
+      });
     if (path === '/admin/overview')
       return reply({
         runtime: {

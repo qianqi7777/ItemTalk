@@ -36,6 +36,7 @@ services:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_CONFIG_ENCRYPTION_KEY: ${MODEL_CONFIG_ENCRYPTION_KEY:-}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
@@ -110,6 +111,7 @@ services:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-dashscope}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_CONFIG_ENCRYPTION_KEY: ${MODEL_CONFIG_ENCRYPTION_KEY:-}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}

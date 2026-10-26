@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     model_provider: str = "dashscope"
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model_api_key: SecretStr = SecretStr("")
+    model_config_encryption_key: SecretStr = SecretStr("")
     chat_model: str = "qwen3.7-flash"
     vision_provider: str = "dashscope"
     vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
