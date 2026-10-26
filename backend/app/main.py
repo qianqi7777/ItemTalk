@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
-from app import operations
+from app import model_configs, operations
 from app.config import settings
 from app.db import actor, execute, json_value, many, one, transaction, validate_runtime
 from app.errors import DomainError, missing
@@ -174,6 +174,52 @@ def admin_overview(days: int = Query(default=1, ge=1, le=30), current=Depends(us
 def admin_metrics(days: int = Query(default=1, ge=1, le=30), current=Depends(user)):
     with transaction() as connection:
         return {"groups": operations.metrics(connection, days)}
+
+
+@app.get("/api/v1/admin/model-configs")
+def admin_model_configs(current=Depends(user)):
+    with transaction() as connection:
+        operations.require_admin(connection)
+        return {
+            "items": model_configs.list_configs(connection),
+            "encryptionReady": model_configs.encryption_ready(),
+            "activeProfile": operations.runtime(connection)["chatProfile"],
+        }
+
+
+@app.post("/api/v1/admin/model-configs/test")
+def admin_test_model_config(request: model_configs.ModelConfigInput, current=Depends(user)):
+    with transaction() as connection:
+        operations.require_admin(connection)
+    model_configs.cipher()
+    result = model_configs.probe(request, str(current["id"]))
+    with transaction() as connection:
+        operations.require_admin(connection)
+    return {
+        **result,
+        "testToken": model_configs.test_proof(request, current["id"]),
+        "validForSeconds": 900,
+    }
+
+
+@app.post("/api/v1/admin/model-configs", status_code=201)
+def admin_save_model_config(
+    request: model_configs.ModelConfigSave,
+    current=Depends(user),
+    key: str = Header(alias="Idempotency-Key"),
+):
+    with transaction() as connection:
+        operations.require_admin(connection)
+        body = {"fingerprint": model_configs.fingerprint(request)}
+        previous = idempotent(connection, current["id"], "admin/model-configs", key, body)
+        if previous:
+            return previous["response_snapshot"]
+        model_configs.verify_proof(request, current["id"], request.testToken)
+        result = model_configs.save_config(connection, request)
+        remember(
+            connection, current["id"], "admin/model-configs", key, body, current["id"], result, 201
+        )
+        return result
 
 
 @app.get("/api/v1/admin/runtime-config")

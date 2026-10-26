@@ -77,8 +77,8 @@ class GatewayChatModel(BaseChatModel):
         return self.model_copy(update={"bound_tools": list(tools)})
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        gateway = ModelGateway()
-        if settings().model_provider == "mock":
+        gateway = kwargs.pop("_gateway", None) or ModelGateway()
+        if gateway.config.model_provider == "mock":
             if any(isinstance(message, ToolMessage) for message in messages):
                 answer = AIMessage(content="受限证据工具已执行，checkpoint 恢复完成")
             else:
@@ -109,7 +109,7 @@ class GatewayChatModel(BaseChatModel):
                 ]
             wire.append(row)
         payload = {
-            "model": settings().chat_model,
+            "model": gateway.config.chat_model,
             "messages": wire,
             "max_tokens": 1000,
             "tools": [convert_to_openai_tool(entry) for entry in self.bound_tools],
@@ -123,7 +123,7 @@ class GatewayChatModel(BaseChatModel):
             payload["tool_choice"] = {"type": "function", "function": {"name": "read_evidence"}}
         elif self.json_output:
             payload["response_format"] = {"type": "json_object"}
-        if settings().model_provider == "dashscope":
+        if gateway.config.model_provider == "dashscope":
             payload["enable_thinking"] = False
         result = gateway.request("chat", "/chat/completions", payload)["choices"][0]["message"]
         calls = [

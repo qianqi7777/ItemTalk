@@ -2884,3 +2884,9 @@ svg {
     scroll-behavior: auto !important;
   }
 }
+.model-config-fields {
+  border: 0;
+  padding: 0;
+  margin: 20px 0 24px;
+  min-width: 0;
+}
