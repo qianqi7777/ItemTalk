@@ -1,11 +1,13 @@
 """Generate only supported answers from private, current-question web evidence."""
 
+import re
 import time
 
 from app.db import many, one, transaction
 from app.deadlines import remaining
 from app.errors import DomainError
 from app.grounding import evidence_insufficient, grounded_answer
+from app.services.general_advice import requires_evidence
 from app.services.web_research import research
 
 
@@ -67,12 +69,26 @@ def answer_from_web(run, instance, question, gateway, cancelled, on_status=None)
         if evidence_insufficient(answer):
             lookup.update(status="empty", reason="unsupported", sources=[])
             return None, None, lookup
-        assessment = gateway.assess_answer(question, answer, evidence, run["user_id"])
-        supported, retained = grounded_answer(answer, evidence, assessment)
+        markers = re.findall(r"\[(\d+)\]", answer)
+        if not markers or any(len(value) > 4 for value in markers):
+            lookup.update(status="empty", reason="unsupported", sources=[])
+            return None, None, lookup
+        cited = {int(value) for value in markers}
+        referenced = [row for row in evidence if row["rank"] in cited]
+        if cited != {row["rank"] for row in referenced}:
+            lookup.update(status="empty", reason="unsupported", sources=[])
+            return None, None, lookup
+        assessment = gateway.assess_answer(question, answer, referenced, run["user_id"])
+        supported, retained = grounded_answer(answer, referenced, assessment)
         if supported is None or not retained:
             lookup.update(status="empty", reason="unsupported", sources=[])
             return None, None, lookup
         lookup["sources"] = [s for s in lookup["sources"] if s["rank"] in retained]
+        if requires_evidence(supported) and any(
+            s["sourceKind"] != "official" for s in lookup["sources"]
+        ):
+            lookup.update(status="empty", reason="official_required", sources=[])
+            return None, None, lookup
         return supported, "web", lookup
     except DomainError as error:
         if error.status == 409:

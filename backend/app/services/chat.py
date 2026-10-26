@@ -57,6 +57,17 @@ def message_view(connection, row):
         "id": str(row["id"]),
         "role": row["role"],
         "content": row["content"],
+        "inputMessageId": (
+            str(
+                one(
+                    connection,
+                    "SELECT input_message_id FROM assistant_runs WHERE id=:id",
+                    id=row["run_id"],
+                )["input_message_id"]
+            )
+            if row["role"] == "assistant" and row.get("run_id")
+            else None
+        ),
         "webLookup": (
             {key: value for key, value in row["web_lookup"].items() if key != "sources"}
             if row.get("web_lookup")
@@ -97,6 +108,7 @@ def run_view(connection, run):
     )
     return {
         "id": str(run["id"]),
+        "inputMessageId": str(run["input_message_id"]),
         "conversationId": str(run["conversation_id"]),
         "status": run["status"],
         "startedAt": run["started_at"].isoformat(),
@@ -154,6 +166,8 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
     body = request.model_dump(mode="json")
     if not body.get("forceWebSearch"):
         body.pop("forceWebSearch", None)
+    if body.get("sourceMessageId") is None:
+        body.pop("sourceMessageId", None)
     request_hash = digest({"body": body, "retry": str(retry) if retry else None})
     old = one(
         connection,
@@ -192,6 +206,28 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         ):
             raise DomainError(409, "IDEMPOTENCY_CONFLICT", "重试必须沿用原始输入")
         input_id = original["id"]
+    elif request.sourceMessageId:
+        original = one(
+            connection,
+            "SELECT * FROM messages WHERE id=:id AND conversation_id=:c "
+            "AND user_id=:u AND role='user'",
+            id=request.sourceMessageId,
+            c=conversation_id,
+            u=user,
+        )
+        if not original:
+            missing()
+        attached = many(
+            connection,
+            "SELECT asset_id FROM message_attachments WHERE message_id=:id ORDER BY sort_order",
+            id=original["id"],
+        )
+        if (
+            original["content"] != request.content
+            or [r["asset_id"] for r in attached] != request.assetIds
+        ):
+            raise DomainError(409, "IDEMPOTENCY_CONFLICT", "重新搜索必须使用同一原问题与附件")
+        input_id = original["id"]
     else:
         input_id = uuid4()
     run = one(
@@ -213,7 +249,7 @@ def start_run(connection, conversation_id, request, user, key, retry=None):
         snapshot=json_value(capture(connection)),
         force=request.forceWebSearch,
     )
-    if not retry:
+    if not retry and not request.sourceMessageId:
         execute(
             connection,
             (

@@ -7,6 +7,7 @@ export default defineConfig({
     'ui-responsive.spec.ts',
     'history.spec.ts',
     'general-help.spec.ts',
+    'web-help.spec.ts',
   ],
   workers: 1,
   timeout: 60000,

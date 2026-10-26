@@ -171,3 +171,72 @@ def test_third_party_never_enables_firmware_steps(client, online):
         client, f"/conversations/{conversation['id']}/messages", {"content": "如何刷固件？"}
     ).json()
     assert online and saved["answerBasis"] == "insufficient" and not saved["webSources"]
+
+
+def test_forced_research_reuses_owned_original_question(client, online):
+    register_login(client)
+    product = identified_product(client)
+    conversation = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
+    path = f"/conversations/{conversation['id']}/messages"
+    first = post(client, path, {"content": "蓝牙怎么连接？"}).json()
+    before = client.get("/api/v1" + path).json()["items"]
+    response = post(
+        client,
+        path,
+        {
+            "content": before[0]["content"],
+            "forceWebSearch": True,
+            "sourceMessageId": before[0]["id"],
+        },
+    )
+    assert response.status_code == 201
+    after = client.get("/api/v1" + path).json()["items"]
+    assert len(after) == 3 and sum(m["role"] == "user" for m in after) == 1
+    assert first["id"] != response.json()["id"]
+
+
+def test_answer_can_cite_only_one_of_multiple_web_candidates(client, online, monkeypatch):
+    monkeypatch.setattr(
+        web_research.SearchGateway,
+        "search",
+        lambda *_args, **_kwargs: [
+            {"url": f"https://guide.example/{i}", "title": "演示设备 DEMO-100 CN 蓝牙教程"}
+            for i in range(2)
+        ],
+    )
+    # The fetch fixture returns one canonical URL; use distinct fetched URLs for this case.
+    body = "演示设备 DEMO-100 CN 蓝牙连接教程：在电脑蓝牙设置中选择 DEMO-100，确认连接。"
+    monkeypatch.setattr(
+        web_research, "fetch_public", lambda url, **_kwargs: (url, "text/html", body.encode())
+    )
+    register_login(client)
+    product = identified_product(client)
+    c = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
+    result = post(
+        client, f"/conversations/{c['id']}/messages", {"content": "蓝牙怎么连接？"}
+    ).json()
+    assert result["answerBasis"] == "web" and len(result["webSources"]) == 1
+
+
+def test_low_risk_question_cannot_receive_third_party_reset_steps(client, online, monkeypatch):
+    body = "演示设备 DEMO-100 CN 蓝牙故障：长按底部按钮十秒恢复出厂设置。"
+    monkeypatch.setattr(web_research, "parse_document", lambda *_args, **_kwargs: [(1, body)])
+    monkeypatch.setattr(
+        ModelGateway, "answer", lambda *_args, **_kwargs: "长按底部按钮十秒恢复出厂设置。[1]"
+    )
+    monkeypatch.setattr(
+        ModelGateway,
+        "assess_answer",
+        lambda *_args, **_kwargs: {
+            "fullySupported": True,
+            "citations": [{"rank": 1, "supported": True, "quote": body}],
+        },
+    )
+    register_login(client)
+    product = identified_product(client)
+    c = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
+    result = post(
+        client, f"/conversations/{c['id']}/messages", {"content": "蓝牙连接不上怎么办？"}
+    ).json()
+    assert result["answerBasis"] == "general" and not result["webSources"]
+    assert result["webLookup"]["reason"] == "official_required"

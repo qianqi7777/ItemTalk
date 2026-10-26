@@ -55,6 +55,67 @@ test('无官方资料的产品仍可提问，历史中的通用建议保持明�
   expect(screen.getByLabelText('提问内容')).toBeEnabled();
 });
 
+test('恢复联网来源并强制重搜原问题，不重复追加用户输入', async () => {
+  vi.mocked(streamAnswer).mockResolvedValue({
+    id: 'new-run',
+    status: 'completed',
+    message: {
+      id: 'new-answer',
+      role: 'assistant',
+      content: '重新搜索回答',
+      answerBasis: 'web',
+      citations: [],
+    },
+  } as never);
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{
+        id: 'web-chat',
+        nextCursor: null,
+        items: [
+          {
+            id: 'original-question',
+            role: 'user',
+            content: '蓝牙怎么连接？',
+            citations: [],
+          },
+          {
+            id: 'answer',
+            role: 'assistant',
+            content: '选择设备。[1]',
+            answerBasis: 'web',
+            citations: [],
+            webSources: [
+              {
+                id: 'web',
+                rank: 1,
+                title: '蓝牙教程',
+                url: 'https://guide.example/help',
+                sourceKind: 'third_party',
+                fetchedAt: '2026-10-25T10:00:00Z',
+                pageStart: null,
+                pageEnd: null,
+              },
+            ],
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByText('基于联网资料')).toBeVisible();
+  expect(screen.getByText('第三方资料 · 非官方核验')).toBeVisible();
+  await userEvent.click(screen.getByRole('button', { name: '重新联网搜索' }));
+  await waitFor(() => expect(streamAnswer).toHaveBeenCalled());
+  expect(vi.mocked(streamAnswer).mock.calls[0].slice(7)).toEqual([
+    true,
+    'original-question',
+  ]);
+  expect(screen.getAllByText('蓝牙怎么连接？', { exact: true })).toHaveLength(
+    1,
+  );
+});
+
 test('建议问题只填入草稿，用户发送前不创建会话或调用模型', async () => {
   render(<ChatPanel product={product} />);
   await userEvent.click(screen.getByRole('button', { name: '如何开始使用？' }));
@@ -62,6 +123,92 @@ test('建议问题只填入草稿，用户发送前不创建会话或调用模�
   expect(post).not.toHaveBeenCalled();
   expect(streamAnswer).not.toHaveBeenCalled();
 });
+
+test('旧问题重搜回答之后仍关联旧问题，而非最近一次新问题', async () => {
+  vi.mocked(streamAnswer).mockResolvedValue({
+    id: 'run',
+    status: 'completed',
+  } as never);
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{
+        id: 'chat',
+        nextCursor: null,
+        items: [
+          { id: 'q1', role: 'user', content: '旧问题', citations: [] },
+          { id: 'a1', role: 'assistant', content: '旧回答', citations: [] },
+          { id: 'q2', role: 'user', content: '新问题', citations: [] },
+          { id: 'a2', role: 'assistant', content: '新回答', citations: [] },
+          {
+            id: 'research-a1',
+            role: 'assistant',
+            content: '旧问题重搜回答',
+            citations: [],
+            inputMessageId: 'q1',
+          },
+        ],
+      }}
+    />,
+  );
+  await userEvent.click(
+    screen.getAllByRole('button', { name: '重新联网搜索' }).at(-1)!,
+  );
+  await waitFor(() => expect(streamAnswer).toHaveBeenCalled());
+  expect(vi.mocked(streamAnswer).mock.calls[0][1]).toBe('旧问题');
+});
+
+test.each(['重试回答', '查询结果'])(
+  '%s成功后原问题ID可用于重新联网',
+  async (action) => {
+    const recovered = {
+      id: 'saved-run',
+      inputMessageId: 'server-question',
+      status: 'completed',
+      message: {
+        id: 'saved-answer',
+        inputMessageId: 'server-question',
+        role: 'assistant',
+        content: '已经恢复',
+        citations: [],
+        answerBasis: 'web',
+      },
+    };
+    vi.mocked(api).mockImplementation(async (path) =>
+      path.includes('/runs/') ? recovered : ({ speechToText: false } as never),
+    );
+    vi.mocked(streamAnswer)
+      .mockImplementationOnce(async (_id, _question, callbacks) => {
+        callbacks.status('failed-run', 'running');
+        throw new Error('断网');
+      })
+      .mockImplementationOnce(async (_id, _question, callbacks) => {
+        callbacks.status('retry-run', 'running');
+        throw new Error('再次断网');
+      })
+      .mockResolvedValue(recovered as never);
+    render(
+      <ChatPanel
+        product={product}
+        initialConversation={{ id: 'chat', nextCursor: null, items: [] }}
+      />,
+    );
+    await userEvent.type(screen.getByLabelText('提问内容'), '原问题');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: '重试回答' }),
+    );
+    await screen.findByText('再次断网');
+    await userEvent.click(await screen.findByRole('button', { name: action }));
+    await screen.findByText('已经恢复');
+    await userEvent.click(screen.getByRole('button', { name: '重新联网搜索' }));
+    await waitFor(() =>
+      expect(vi.mocked(streamAnswer).mock.calls.at(-1)?.[8]).toBe(
+        'server-question',
+      ),
+    );
+  },
+);
 
 test('查询旧回答期间新建会话，迟到结果不能混入新会话', async () => {
   let resolve!: (value: unknown) => void;

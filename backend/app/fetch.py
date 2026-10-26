@@ -4,12 +4,12 @@ import http.client
 import ipaddress
 import socket
 import ssl
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
 from app.config import settings
-from app.deadlines import remaining
+from app.deadlines import bounded_call, remaining
 from app.errors import DomainError
 
 
@@ -57,7 +57,10 @@ def public_addresses(url, resolver=None):
             else socket.getaddrinfo
         )
     try:
-        addresses = {row[4][0] for row in resolver(parts.hostname, 443, type=socket.SOCK_STREAM)}
+        addresses = {
+            row[4][0]
+            for row in bounded_call(resolver, parts.hostname, 443, type=socket.SOCK_STREAM)
+        }
         if not addresses or any(
             not ipaddress.ip_address(ip).is_global
             or ipaddress.ip_address(ip).ipv4_mapped is not None
@@ -79,7 +82,12 @@ class PinnedHTTPS(http.client.HTTPSConnection):
 
     def connect(self):
         sock = socket.create_connection((self.address, 443), self.timeout)
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        try:
+            sock.settimeout(remaining(self.timeout))
+            self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
 
 
 def fetch_public(url, maximum=50 * 1024 * 1024):
@@ -88,13 +96,31 @@ def fetch_public(url, maximum=50 * 1024 * 1024):
         connection = PinnedHTTPS(parts.hostname, addresses[0])
         connection.timeout = remaining(15)
         try:
-            path = parts.path or "/"
+            path = quote(parts.path or "/", safe="/%:@!$&'()*+,;=-._~")
             if parts.query:
-                path += "?" + parts.query
+                path += "?" + quote(parts.query, safe="=&%+/:?@!$'()*,-._~")
             connection.request(
                 "GET", path, headers={"User-Agent": "ItemTalk/0.1", "Accept-Encoding": "identity"}
             )
-            response = connection.getresponse()
+
+            response_holder = {}
+
+            def abort_connection(connection=connection, response_holder=response_holder):
+                sock = getattr(connection, "sock", None)
+                response = response_holder.get("response")
+                if not sock and response is not None:
+                    sock = getattr(
+                        getattr(getattr(response, "fp", None), "raw", None), "_sock", None
+                    )
+                if sock:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                connection.close()
+
+            response = bounded_call(connection.getresponse, on_timeout=abort_connection)
+            response_holder["response"] = response
             if response.status in (301, 302, 303, 307, 308):
                 url = urljoin(url, response.getheader("Location") or "")
                 continue
@@ -103,7 +129,24 @@ def fetch_public(url, maximum=50 * 1024 * 1024):
             mime = (response.getheader("Content-Type") or "").split(";")[0].lower()
             if mime not in {"application/pdf", "text/html", "text/plain"}:
                 raise DomainError(422, "FILE_TYPE_NOT_ALLOWED", "资料格式不支持")
-            data = response.read(maximum + 1)
+            chunks, size = [], 0
+            while size <= maximum:
+                timeout = remaining(15)
+                sock = getattr(connection, "sock", None) or getattr(
+                    getattr(getattr(response, "fp", None), "raw", None), "_sock", None
+                )
+                if sock:
+                    sock.settimeout(timeout)
+                chunk = bounded_call(
+                    getattr(response, "read1", response.read),
+                    min(65536, maximum + 1 - size),
+                    on_timeout=abort_connection,
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            data = b"".join(chunks)
             if len(data) > maximum:
                 raise DomainError(413, "FILE_TOO_LARGE", "官方资料超过限制")
             return url, mime, data

@@ -74,6 +74,7 @@ export interface WebLookup {
 }
 export interface Message {
   id: string;
+  inputMessageId?: string | null;
   role: string;
   content: string | null;
   answerBasis?:
@@ -169,6 +170,7 @@ export interface Guidance {
 }
 export interface Run {
   id: string;
+  inputMessageId?: string;
   status: string;
   message?: Message | null;
   lastError?: string | null;

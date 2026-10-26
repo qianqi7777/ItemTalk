@@ -13,7 +13,7 @@ export function MessageContent({
   citations = [],
 }: {
   content: string;
-  citations?: Citation[];
+  citations?: Pick<Citation, 'rank'>[];
 }) {
   const ranks = new Set(citations.map((citation) => citation.rank));
   const inline = (text: string): ReactNode =>

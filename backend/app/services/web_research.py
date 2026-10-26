@@ -29,7 +29,7 @@ BRANDS = (
     (("罗技", "logitech", "logi"), ("logitech.com", "logitech.com.cn", "logi.com")),
 )
 TOPICS = (
-    (r"蓝牙|bluetooth|配对|pair", "蓝牙连接 配对 Bluetooth", r"蓝牙|bluetooth|配对|pair"),
+    (r"蓝牙|bluetooth|配对|pair", "蓝牙配对", r"蓝牙|bluetooth|配对|pair"),
     (r"dpi|灵敏度|指针|pointer|sensitivity", "DPI 指针灵敏度设置", r"dpi|灵敏度|指针|sensitivity"),
     (r"wifi|wi-fi|网络|联网", "WiFi 网络连接设置", r"wifi|wi-fi|网络"),
     (r"固件|firmware|刷机", "固件 firmware 官方支持", r"固件|firmware"),
@@ -40,11 +40,23 @@ TOPICS = (
 )
 
 
+def official_url(url, domains):
+    """Manufacturer-hosted community contributions do not carry manufacturer authority."""
+    if not allowed_url(url, domains):
+        return False
+    host = urlsplit(url).hostname or ""
+    return not any(
+        re.match(r"^(?:bbs|forums?|community|discussions?|answers)(?:-|$)", label)
+        for label in host.split(".")[:-2]
+    )
+
+
 def identity(model):
     brand = normalize(model["brand_name"])
     for aliases, domains in BRANDS:
         if brand in aliases:
-            return aliases, sorted(set(domains) | set(model.get("official_domains") or []))
+            registered = model.get("official_domains")
+            return aliases, sorted(domains if registered is None else registered)
     return (brand,), sorted(model.get("official_domains") or [])
 
 
@@ -80,6 +92,7 @@ def queries(model, question):
                 model.get("region"),
                 model.get("hardware_revision"),
                 sorted(model.get("blocked_urls") or []),
+                requires_evidence(question),
                 1,
             ],
             ensure_ascii=False,
@@ -87,8 +100,8 @@ def queries(model, question):
     ).hexdigest()
     return (
         [
-            f"{name} 官方 说明书 使用手册",
-            f"site:{domains[0]} {model['model_code']} {topic}"
+            f"{name} 说明书",
+            f"site:{domains[0]} {model['model_code']}"
             if domains
             else f"{name} user manual support",
             public + " 教程",
@@ -119,13 +132,21 @@ def _match(model, title, body, trusted):
     match = contains(text, model["model_code"])
     if not match:
         return "wrong_model"
-    following = normalize(text)[match.end() : match.end() + 20]
+    if re.search(r"[a-z]+[\s_-]*\d+", normalize(title)) and not contains(
+        title, model["model_code"]
+    ):
+        return "wrong_model"
+    following = [normalize(text)[match.end() : match.end() + 20]]
     title_match = contains(title, model["model_code"])
     if title_match:
-        following += " " + normalize(title)[title_match.end() : title_match.end() + 20]
-    if re.match(
-        r"\s*(?:升级版|升级款|v[2-9]\b|upgraded|generation\s*[2-9])", following
-    ) and not re.search(r"升级|upgraded|v[2-9]", normalize(model["model_code"])):
+        following.append(normalize(title)[title_match.end() : title_match.end() + 20])
+    variant = (
+        r"^[\s_-]*(?:升级版|升级款|upgraded|generation\s*[2-9]|"
+        r"(?:v[2-9]|[abc]|pro|max|ultra|plus|lite|se)(?![a-z0-9]))"
+    )
+    if any(re.match(variant, tail) for tail in following) and not re.search(
+        r"升级|upgraded|v[2-9]", normalize(model["model_code"])
+    ):
         return "wrong_model"
     for key in ("region", "hardware_revision"):
         if model.get(key) and not contains(text, model[key]):
@@ -156,8 +177,8 @@ def cache_valid(cached, query_key, domains):
             return False
         return all(
             s["sourceKind"] != "official"
-            or allowed_url(s["url"], domains)
-            or (allowed_url(s.get("linkedFrom", ""), domains) and s.get("linkedUrl") == s["url"])
+            or official_url(s["url"], domains)
+            or (official_url(s.get("linkedFrom", ""), domains) and s.get("linkedUrl") == s["url"])
             for s in cached.get("sources", [])
         )
     except (KeyError, TypeError, ValueError):
@@ -182,7 +203,15 @@ def research(
         raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
     if risk_of(question) == "high":
         return {**result, "reason": "unsafe"}
-    if cached and not force and cache_valid(cached, key, domains):
+    if (
+        cached
+        and not force
+        and cache_valid(cached, key, domains)
+        and not (
+            requires_evidence(question)
+            and any(s["sourceKind"] != "official" for s in cached.get("sources", []))
+        )
+    ):
         if on_status:
             on_status("web_cached")
         return {**cached, "cached": True}
@@ -192,7 +221,7 @@ def research(
     search = SearchGateway()
     with request_scope(deadline, cancelled):
         try:
-            for query in query_list:
+            for index, query in enumerate(query_list):
                 if time.monotonic() >= deadline:
                     result["reason"] = "timeout"
                     break
@@ -201,14 +230,31 @@ def research(
                 rows = search.search(
                     query, timeout=min(6, deadline - time.monotonic()), max_attempts=1, subject=user
                 )
+
+                def priority(row):
+                    title = row.get("title", "")
+                    aliases, _ = identity(model)
+                    return (
+                        not official_url(row.get("url", ""), domains),
+                        not bool(
+                            re.search(
+                                r"说明书|手册|教程|manual|guide|support|\.pdf",
+                                title + row.get("url", ""),
+                                re.I,
+                            )
+                        ),
+                        not bool(contains(title, model["model_code"])),
+                        not any(contains(title, alias) for alias in aliases),
+                        bool(re.search(r"包邮|优惠|报价|价格|促销", title)),
+                    )
+
                 queue = [
                     (row, None)
-                    for row in sorted(
-                        rows, key=lambda row: not allowed_url(row.get("url", ""), domains)
-                    )
+                    for row in sorted((row for row in rows if isinstance(row, dict)), key=priority)
                     if isinstance(row, dict) and safe_candidate(row.get("url", ""))
                 ]
-                while queue and fetched < 5 and time.monotonic() < deadline:
+                group_end = min(5, fetched + (2 if index < 2 else 5))
+                while queue and fetched < group_end and time.monotonic() < deadline:
                     if cancelled():
                         raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
                     row, parent = queue.pop(0)
@@ -223,8 +269,8 @@ def research(
                         final, mime, data = fetch_public(url, maximum=8 * 1024 * 1024)
                         if not safe_candidate(final) or final in blocked:
                             continue
-                        trusted = allowed_url(final, domains) or (
-                            parent and final == url and allowed_url(parent, domains)
+                        trusted = official_url(final, domains) or (
+                            parent and final == url and official_url(parent, domains)
                         )
                         if mime == "text/html":
                             soup = BeautifulSoup(data[:2_000_000], "html.parser")
@@ -301,7 +347,7 @@ def research(
                             source.update(linkedFrom=parent, linkedUrl=final)
                         result["sources"].append(source)
                         break
-                if any(s["sourceKind"] == "official" for s in result["sources"]) or fetched >= 5:
+                if fetched >= 5:
                     break
         except DomainError as error:
             if error.status == 409:

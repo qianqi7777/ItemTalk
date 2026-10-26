@@ -50,9 +50,12 @@ class IdentifyRequest(Input):
 class MessageRequest(Input):
     content: str | None = Field(default=None, min_length=1, max_length=10000)
     forceWebSearch: bool = False
+    sourceMessageId: UUID | None = None
 
     @model_validator(mode="after")
     def complete(self):
+        if self.sourceMessageId and not self.forceWebSearch:
+            raise ValueError("重新搜索原问题必须明确请求联网")
         return self.validate_input(self.content)
 
 
