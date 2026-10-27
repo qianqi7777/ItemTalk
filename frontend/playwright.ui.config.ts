@@ -9,6 +9,7 @@ export default defineConfig({
     'general-help.spec.ts',
     'web-help.spec.ts',
     'model-configs-ui.spec.ts',
+    'model-roles-ui.spec.ts',
   ],
   workers: 1,
   timeout: 60000,

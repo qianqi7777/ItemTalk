@@ -56,7 +56,8 @@ def v2(client, monkeypatch):
         execute(
             connection,
             "UPDATE runtime_config SET version=1,global_limit=NULL,subject_limit=NULL,"
-            "background_paused=false,chat_profile='current'",
+            "background_paused=false,chat_profile='current',vision_profile='current',"
+            "stt_profile='current',embedding_profile='current'",
         )
     yield client
     settings.cache_clear()

@@ -13,8 +13,12 @@ def transcribe_asset(connection, asset_id, user_id):
     if not asset["mime_type"].startswith("audio/"):
         raise DomainError(422, "FILE_TYPE_NOT_ALLOWED", "请选择音频资产")
     data = Storage().read(asset["object_key"], maximum=7 * 1024 * 1024)
-    return {
-        "assetId": str(asset_id),
-        "text": ASRProvider().transcribe(data, asset["mime_type"], user_id),
-        "requiresConfirmation": True,
-    }
+    provider = ASRProvider()
+    try:
+        return {
+            "assetId": str(asset_id),
+            "text": provider.transcribe(data, asset["mime_type"], user_id),
+            "requiresConfirmation": True,
+        }
+    finally:
+        provider.gateway.close()
