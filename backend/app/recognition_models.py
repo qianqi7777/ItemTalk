@@ -1,10 +1,13 @@
 """Strict private hypotheses; appearance inference is never an official identity claim."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
 from app.schemas import ProvidedModel, StrictModel
+
+FeatureText = Annotated[str, Field(min_length=1, max_length=260)]
+ComparisonText = Annotated[str, Field(min_length=1, max_length=400)]
 
 
 class PhotoRequest(StrictModel):
@@ -31,7 +34,7 @@ class Hypothesis(StrictModel):
 class Observation(StrictModel):
     category: str = Field(min_length=1, max_length=100)
     brandHint: str | None = Field(default=None, max_length=120)
-    features: list[str] = Field(default_factory=list, max_length=8)
+    features: list[FeatureText] = Field(default_factory=list, max_length=8)
     hypotheses: list[Hypothesis] = Field(default_factory=list, max_length=5)
     photoRequests: list[PhotoRequest] = Field(default_factory=list, max_length=2)
     clarification: str | None = Field(default=None, max_length=1000)
@@ -45,10 +48,10 @@ class Observation(StrictModel):
 
 
 class VisualMatch(ProvidedModel):
-    sourceIds: list[str] = Field(min_length=1, max_length=3)
-    matchReasons: list[str] = Field(min_length=1, max_length=4)
-    differences: list[str] = Field(default_factory=list, max_length=4)
-    missingEvidence: list[str] = Field(default_factory=list, max_length=4)
+    sourceIds: list[ComparisonText] = Field(min_length=1, max_length=3)
+    matchReasons: list[ComparisonText] = Field(min_length=1, max_length=4)
+    differences: list[ComparisonText] = Field(default_factory=list, max_length=4)
+    missingEvidence: list[ComparisonText] = Field(default_factory=list, max_length=4)
     strength: Literal["likely", "possible"] = "possible"
     referenceImageSourceId: str | None = None
 

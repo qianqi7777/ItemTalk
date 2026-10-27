@@ -52,6 +52,77 @@ def test_photo_without_nameplate_returns_category_features_and_hypothesis(monkey
     assert result.photoRequests[0].target == "front"
     assert seen[0]["model"] == "qwen3.7-flash"
     assert any(row["type"] == "image_url" for row in seen[0]["messages"][-1]["content"])
+    output = seen[0]["response_format"]
+    assert output["type"] == "json_schema" and output["json_schema"]["strict"] is True
+    schema = output["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["features"]["items"]["maxLength"] == 260
+    assert schema["$defs"]["PhotoRequest"]["properties"]["target"]["enum"] == [
+        "front",
+        "back",
+        "side",
+        "ports",
+        "buttons",
+        "screen",
+        "label",
+    ]
+
+
+@pytest.mark.parametrize(
+    "finish,content,category,word",
+    [
+        ("length", '{"category":', "truncated", "截断"),
+        ("stop", '{"category":', "invalid_json", "有效 JSON"),
+        ("stop", '{"features": []}', "invalid_schema", "字段"),
+    ],
+)
+def test_model_output_failures_have_controlled_diagnostics(
+    monkeypatch, caplog, finish, content, category, word
+):
+    vision = importlib.import_module("app.recognition_vision")
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"choices": [{"finish_reason": finish, "message": {"content": content}}]}
+            )
+        )
+    ) as client:
+        gateway = ModelGateway(
+            client, configuration=Settings(model_provider="dashscope", vision_api_key="test")
+        )
+        monkeypatch.setattr(gateway, "budget", lambda subject: None)
+        with pytest.raises(DomainError) as error:
+            vision.observe(gateway, [(picture(), "image/jpeg")], "私人备注", {}, "user")
+    assert word in error.value.message
+    assert f"stage=observation category={category}" in caplog.text
+    assert content not in caplog.text and "私人备注" not in caplog.text
+
+
+def test_compatible_provider_gets_full_schema_without_unsupported_schema_mode(monkeypatch):
+    vision = importlib.import_module("app.recognition_vision")
+    seen = []
+
+    def respond(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(observation())}}]}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        gateway = ModelGateway(
+            client,
+            configuration=Settings(
+                vision_provider="openai_compatible",
+                vision_model="other-vision",
+                vision_api_key="test",
+            ),
+            managed_roles={"vision"},
+        )
+        monkeypatch.setattr(gateway, "budget", lambda subject: None)
+        vision.observe(gateway, [(picture(), "image/jpeg")], "", {}, "user")
+    assert seen[0]["response_format"] == {"type": "json_object"}
+    assert '"additionalProperties": false' in seen[0]["messages"][0]["content"]
+    assert '"maxLength": 260' in seen[0]["messages"][0]["content"]
 
 
 def test_comparison_sees_all_photos_reference_image_and_rejected_models(monkeypatch):
