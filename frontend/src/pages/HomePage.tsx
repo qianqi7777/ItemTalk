@@ -34,6 +34,7 @@ export function HomePage() {
   const [input, setInput] = useState('');
   const [photos, setPhotos] = useState<Asset[]>([]);
   const [discardedPhotos, setDiscardedPhotos] = useState<string[]>([]);
+  const [rejectedCandidates, setRejectedCandidates] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [recognitionEpoch, setRecognitionEpoch] = useState(0);
   const [attempt, setAttempt] = useState<Identification>();
@@ -53,6 +54,51 @@ export function HomePage() {
   const attemptRef = useRef<Identification | undefined>(undefined);
   const { user } = useSession();
   const storageKey = user ? `itemtalk.recognition:${user.id}` : null;
+  const rejectionKey = storageKey ? `${storageKey}:rejected` : null;
+  const rememberRejections = useCallback(
+    (attemptId?: string, ids: string[] = []) => {
+      if (!rejectionKey) return;
+      try {
+        if (attemptId && ids.length)
+          sessionStorage.setItem(
+            rejectionKey,
+            JSON.stringify({ attemptId, ids }),
+          );
+        else sessionStorage.removeItem(rejectionKey);
+      } catch {
+        /* Rejection stays in memory if browser storage is unavailable. */
+      }
+    },
+    [rejectionKey],
+  );
+  const restoreRejections = useCallback(
+    (restored: Identification) => {
+      if (!rejectionKey) return [];
+      try {
+        const saved = JSON.parse(
+          sessionStorage.getItem(rejectionKey) ?? 'null',
+        ) as { attemptId?: unknown; ids?: unknown } | null;
+        if (saved?.attemptId !== restored.id || !Array.isArray(saved.ids))
+          return [];
+        const allowed = new Set(
+          restored.candidates.flatMap((candidate) => {
+            const id = candidate.candidateId ?? candidate.productModelId;
+            return id ? [id] : [];
+          }),
+        );
+        return [
+          ...new Set(
+            saved.ids.filter(
+              (id): id is string => typeof id === 'string' && allowed.has(id),
+            ),
+          ),
+        ].slice(0, 5);
+      } catch {
+        return [];
+      }
+    },
+    [rejectionKey],
+  );
   const rememberAttempt = useCallback(
     (value?: Identification) => {
       attemptRef.current = value;
@@ -107,6 +153,7 @@ export function HomePage() {
               selectProduct(undefined);
               rememberAttempt(restored);
               setPhotos(restored.photos ?? []);
+              setRejectedCandidates(restoreRejections(restored));
               return;
             }
           } catch {
@@ -119,6 +166,7 @@ export function HomePage() {
           )
             return;
           if (storageKey) sessionStorage.removeItem(storageKey);
+          rememberRejections();
         }
         selectProduct(response.items[0]);
       })
@@ -134,7 +182,13 @@ export function HomePage() {
       active = false;
       selectionRevision.current += 1;
     };
-  }, [selectProduct, storageKey, rememberAttempt]);
+  }, [
+    selectProduct,
+    storageKey,
+    rememberAttempt,
+    restoreRejections,
+    rememberRejections,
+  ]);
   const pollAttempt = useCallback(async () => {
     if (!attempt) return;
     const revision = recognitionRevision.current;
@@ -183,7 +237,9 @@ export function HomePage() {
       ),
   );
 
-  const identify = async (rejectedCandidateIds: string[] = []) => {
+  const identify = async (
+    rejectedCandidateIds: string[] = rejectedCandidates,
+  ) => {
     const revision = ++recognitionRevision.current;
     setBusy(true);
     setError('');
@@ -207,6 +263,8 @@ export function HomePage() {
       rememberAttempt(updated);
       setPhotos(updated.photos ?? photos);
       setDiscardedPhotos([]);
+      setRejectedCandidates([]);
+      rememberRejections();
       setInput('');
     } catch (error) {
       if (revision === recognitionRevision.current)
@@ -244,6 +302,8 @@ export function HomePage() {
       rememberAttempt(undefined);
       setPhotos([]);
       setDiscardedPhotos([]);
+      setRejectedCandidates([]);
+      rememberRejections();
       setJob(undefined);
     } catch (error) {
       setError(error instanceof Error ? error.message : '型号确认失败');
@@ -276,6 +336,8 @@ export function HomePage() {
     setRecognitionEpoch((value) => value + 1);
     setPhotos([]);
     setDiscardedPhotos([]);
+    setRejectedCandidates([]);
+    rememberRejections();
     setUploading(false);
     setBusy(false);
     setJob(undefined);
@@ -378,6 +440,8 @@ export function HomePage() {
                 selectProduct(remaining[0]);
                 setPhotos([]);
                 setDiscardedPhotos([]);
+                setRejectedCandidates([]);
+                rememberRejections();
                 rememberAttempt(undefined);
                 recognitionRevision.current++;
                 setJob(undefined);
@@ -482,6 +546,12 @@ export function HomePage() {
               autoSize={{ minRows: 3 }}
               maxLength={10000}
             />
+            {!!rejectedCandidates.length && (
+              <Alert
+                type="info"
+                title="已排除这些候选，请补充文字或照片，再继续判断。"
+              />
+            )}
             <div className="identify-footer">
               <small>
                 <ShieldCheck size={14} aria-hidden="true" />
@@ -518,13 +588,16 @@ export function HomePage() {
                   attempt={attempt}
                   busy={busy || uploading}
                   onConfirm={(candidate) => void confirm(candidate)}
-                  onRejectAll={() =>
-                    void identify(
-                      attempt.candidates.flatMap((candidate) =>
-                        candidate.candidateId ? [candidate.candidateId] : [],
-                      ),
-                    )
-                  }
+                  onRejectAll={() => {
+                    const rejected = attempt.candidates.flatMap((candidate) => {
+                      const id =
+                        candidate.candidateId ?? candidate.productModelId;
+                      return id ? [id] : [];
+                    });
+                    setRejectedCandidates(rejected);
+                    rememberRejections(attempt.id, rejected);
+                    document.getElementById('product-description')?.focus();
+                  }}
                   onRestart={restartIdentification}
                   onAddPhotos={() =>
                     document

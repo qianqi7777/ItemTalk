@@ -84,6 +84,19 @@ def identify(job):
         gateway = ModelGateway()
         try:
             output = gateway.identify(attempt["input_text"], [], attempt["user_id"]).model_dump()
+            from app.services.recognition import identity_key
+
+            rejected = {
+                identity_key(value)
+                for value in (attempt["analysis"] or {}).get("rejectedModels", [])
+            }
+            output["candidates"] = [
+                candidate
+                for candidate in output["candidates"]
+                if identity_key(candidate["brandName"] + candidate["modelCode"]) not in rejected
+            ]
+            if rejected and not output["candidates"]:
+                output["clarification"] = "已排除先前候选，请补充更多信息或手动输入型号。"
         finally:
             gateway.close()
     with transaction() as connection:

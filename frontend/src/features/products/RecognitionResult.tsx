@@ -100,7 +100,9 @@ export function RecognitionResult({
             <Button disabled={busy || finalRound} onClick={onAddPhotos}>
               继续补拍
             </Button>
-            {attempt.candidates.some((candidate) => candidate.candidateId) && (
+            {attempt.candidates.some(
+              (candidate) => candidate.candidateId || candidate.productModelId,
+            ) && (
               <Button disabled={busy || finalRound} onClick={onRejectAll}>
                 都不是，排除这些候选
               </Button>

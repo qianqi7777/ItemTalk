@@ -268,6 +268,7 @@ def test_removing_all_photos_does_not_fall_back_to_public_text_candidates(client
             a=photo,
             u=user["id"],
         )
+
         execute(
             connection,
             "UPDATE identification_attempts SET analysis=CAST(:v AS jsonb) WHERE id=:i",
@@ -297,3 +298,79 @@ def test_removing_all_photos_does_not_fall_back_to_public_text_candidates(client
             ]
             == 1
         )
+
+
+def test_saved_visual_hypotheses_are_selectable_on_refresh_without_new_model_call(client):
+    from tests.test_visual_recognition import observation
+
+    register_login(client)
+    first, _ = ready(client)
+    with transaction() as connection:
+        execute(
+            connection,
+            "UPDATE identification_attempts SET candidates='[]',analysis=CAST(:v AS jsonb) "
+            "WHERE id=:i",
+            i=first["id"],
+            v=json_value({"observation": observation(), "visualSession": True}),
+        )
+    a = client.get(f"/api/v1/identifications/{first['id']}").json()
+    b = client.get(f"/api/v1/identifications/{first['id']}").json()
+    assert (
+        a["candidates"] and a["candidates"][0]["candidateId"] == b["candidates"][0]["candidateId"]
+    )
+    assert a["candidates"][0]["evidenceLevel"] == "visual_guess"
+    response = post(
+        client,
+        f"/identifications/{first['id']}/confirm",
+        {"candidateId": a["candidates"][0]["candidateId"]},
+    )
+    assert response.status_code == 200 and response.json()["modelCode"] == "iPhone 16"
+
+
+def test_saved_visual_guess_can_be_excluded_in_next_round(client):
+    from tests.test_visual_recognition import observation
+
+    register_login(client)
+    first, _ = ready(client)
+    with transaction() as connection:
+        execute(
+            connection,
+            "UPDATE identification_attempts SET candidates='[]',analysis=CAST(:v AS jsonb) "
+            "WHERE id=:i",
+            i=first["id"],
+            v=json_value({"observation": observation(), "visualSession": True}),
+        )
+    first = client.get(f"/api/v1/identifications/{first['id']}").json()
+    response = post(
+        client,
+        "/products/identify",
+        {
+            "supersedesAttemptId": first["id"],
+            "inputText": "侧面有一个按钮",
+            "rejectedCandidateIds": [first["candidates"][0]["candidateId"]],
+        },
+    )
+    assert response.status_code == 202
+
+
+def test_legacy_candidate_can_be_excluded_before_continuing(client):
+    from app.worker import run_once
+
+    register_login(client)
+    first = post(client, "/products/identify", {"inputText": "DEMO-100 CN"}).json()
+    assert run_once()
+    first = client.get(f"/api/v1/identifications/{first['id']}").json()
+    legacy = first["candidates"][0]["productModelId"]
+    result = post(
+        client,
+        "/products/identify",
+        {
+            "supersedesAttemptId": first["id"],
+            "inputText": "侧面有红色按键",
+            "rejectedCandidateIds": [legacy],
+        },
+    )
+    assert result.status_code == 202, result.text
+    assert run_once()
+    next_round = client.get(f"/api/v1/identifications/{result.json()['id']}").json()
+    assert all(row.get("productModelId") != legacy for row in next_round["candidates"])

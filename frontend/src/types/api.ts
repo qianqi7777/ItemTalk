@@ -20,6 +20,7 @@ export interface Candidate {
   confidence: number;
   evidence: string;
   basis?: 'appearance';
+  evidenceLevel?: 'reference_supported' | 'visual_guess';
   strength?: 'likely' | 'possible';
   matchReasons?: string[];
   differences?: string[];

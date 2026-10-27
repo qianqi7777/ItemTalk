@@ -44,6 +44,7 @@ def discover_candidates(model, known, search):
     ]
     for query in queries:
         previous_count = len(results)
+        previous_urls = set(results)
         try:
             add(search(query))
         except DomainError as error:
@@ -52,27 +53,82 @@ def discover_candidates(model, known, search):
             # Another wording is not a retry of a failed provider request.
             # Do not amplify an outage; keep registered-source path independent.
             break
-        if len(results) > previous_count:
+        if len(results) > previous_count and any(
+            key not in previous_urls and re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)
+            for key, row in results.items()
+        ):
             break
     old = [row for key, row in results.items() if key in registered]
     new = [row for key, row in results.items() if key not in registered]
     # Reserve space for both paths; a full stale registry cannot starve replacements.
-    return (old[:5] + new[:5] + old[5:] + new[5:])[:10]
+    selected = (old[:5] + new[:5] + old[5:] + new[5:])[:10]
+    return sorted(
+        selected, key=lambda row: not re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)
+    )
 
 
-def manual_links(url, data, domains):
+def _add_ranked(result, target, title, model_code, order, limit):
+    def compact(value):
+        return "".join(c for c in value.casefold() if c.isalnum())
+
+    model = compact(model_code or "")
+    score = 0 if model and model in compact(target + " " + title) else 1
+    previous = result.get(target)
+    if previous and previous[0] <= score:
+        return
+    result[target] = (score, order, {"url": target, "title": title})
+    if len(result) > limit:
+        result.pop(max(result, key=lambda key: result[key][:2]))
+
+
+def support_links(url, data, domains, *, model_code=None):
+    """One manufacturer support-page hop; no arbitrary navigation crawl."""
+    from app.services.web_research import official_url
+
+    if not official_url(url, domains):
+        return []
+    soup = BeautifulSoup(data[:2_000_000], "html.parser")
+    result = {}
+    for order, tag in enumerate(soup.select("a[href]")):
+        try:
+            target = urldefrag(urljoin(url, tag["href"]))[0]
+            path = urlsplit(target).path
+        except ValueError:
+            continue
+        label = tag.get_text(" ", strip=True)[:200]
+        if (
+            target != url
+            and len(target) <= 2048
+            and official_url(target, domains)
+            and not re.search(r"\.(?:pdf|exe|zip|dmg|msi)$", path, re.I)
+            and re.search(
+                r"support|download|manual|help|guide|说明书|支持|下载", path + " " + label, re.I
+            )
+        ):
+            _add_ranked(result, target, label or "官方支持", model_code, order, 3)
+    return [item for _, _, item in sorted(result.values())]
+
+
+def manual_links(url, data, domains, *, include_linked=False, model_code=None):
+    from app.services.web_research import official_url
+
+    if include_linked and not official_url(url, domains):
+        return []
     soup = BeautifulSoup(data[:2_000_000], "html.parser")
     links = {}
-    for tag in soup.select("a[href]")[:200]:
+    for order, tag in enumerate(soup.select("a[href]")):
         try:
             target = urldefrag(urljoin(url, tag["href"]))[0]
         except ValueError:
             continue
-        if allowed_url(target, domains) and re.search(r"\.pdf$", urlsplit(target).path, re.I):
-            links.setdefault(
-                target,
-                {"url": target, "title": tag.get_text(" ", strip=True)[:200] or "官方说明书"},
-            )
-        if len(links) == 5:
-            break
-    return list(links.values())
+        if len(target) > 2048:
+            continue
+        safe = allowed_url(target, domains)
+        if include_linked:
+            from app.services.recognition_sources import safe_reference_url
+
+            safe = safe_reference_url(target)
+        if safe and re.search(r"\.pdf$", urlsplit(target).path, re.I):
+            title = tag.get_text(" ", strip=True)[:200] or "官方说明书"
+            _add_ranked(links, target, title, model_code, order, 5)
+    return [item for _, _, item in sorted(links.values())]

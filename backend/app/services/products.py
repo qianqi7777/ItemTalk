@@ -4,7 +4,7 @@
 客户端请求去重与跨用户的公共构建合并分别维护，避免共享任务泄露私有输入。
 """
 
-from uuid import uuid4
+from uuid import NAMESPACE_OID, uuid4, uuid5
 
 from app.db import execute, json_value, many, one
 from app.errors import DomainError, missing
@@ -279,6 +279,34 @@ def instance_view(connection, instance):
     }
 
 
+def private_choices(attempt):
+    """Project saved appearance guesses without paid calls or writes on GET."""
+    from app.recognition_models import Comparison, Observation
+    from app.services.recognition import identity_key, selectable_candidates
+
+    stored = attempt["candidates"] or []
+    analysis = attempt.get("analysis") or {}
+    if not analysis.get("observation") or attempt["status"] != "waiting_for_user":
+        return stored
+    try:
+        observation = Observation.model_validate(analysis["observation"])
+    except ValueError:
+        return stored
+    result = selectable_candidates(
+        observation, Comparison(), [], analysis, attempt["input_text"] or "", existing=stored
+    )
+    for candidate in result[len(stored) :]:
+        candidate["candidateId"] = str(
+            uuid5(
+                NAMESPACE_OID,
+                str(attempt["id"])
+                + ":"
+                + identity_key(candidate["brandName"] + candidate["modelCode"]),
+            )
+        )
+    return result
+
+
 def identification_view(connection, attempt):
     job = one(
         connection,
@@ -309,7 +337,7 @@ def identification_view(connection, attempt):
     return {
         "id": str(attempt["id"]),
         "status": attempt["status"],
-        "candidates": attempt["candidates"] or [],
+        "candidates": private_choices(attempt),
         "clarification": attempt["clarification"],
         "jobId": str(job["id"]),
         "roundNo": attempt.get("round_no", 1),
@@ -384,9 +412,14 @@ def identify(connection, request, user, key):
             for value in dict.fromkeys(old_assets + asset_ids)
             if value not in request.discardAssetIds
         ]
-        valid = {row.get("candidateId"): row for row in parent["candidates"] or []}
+        choices = private_choices(parent)
+        valid = {
+            row.get("candidateId") or row.get("productModelId"): row
+            for row in choices
+            if row.get("candidateId") or row.get("productModelId")
+        }
         if not {str(value) for value in request.rejectedCandidateIds} <= valid.keys():
-            raise DomainError(422, "VALIDATION_ERROR", "只能排除上一轮的外观候选")
+            raise DomainError(422, "VALIDATION_ERROR", "只能排除上一轮的候选型号")
         rejected = list((parent["analysis"] or {}).get("rejectedModels", []))
         rejected += [
             f"{valid[str(value)]['brandName']} {valid[str(value)]['modelCode']}"
@@ -411,7 +444,7 @@ def identify(connection, request, user, key):
                             "missingEvidence",
                         }
                     }
-                    for row in parent["candidates"] or []
+                    for row in choices
                 ],
             },
         }
@@ -482,7 +515,7 @@ def confirm(connection, attempt_id, request, user):
         candidate = next(
             (
                 row
-                for row in attempt["candidates"] or []
+                for row in private_choices(attempt)
                 if row.get("candidateId") == str(request.candidateId)
             ),
             None,
@@ -525,10 +558,11 @@ def confirm(connection, attempt_id, request, user):
         (
             "UPDATE identification_attempts SET "
             "status='confirmed',confirmed_product_model_id=:m, "
-            "confirmed_at=now(),correction_note=:note WHERE id=:id"
+            "confirmed_at=now(),correction_note=:note,candidates=CAST(:c AS jsonb) WHERE id=:id"
         ),
         m=model["id"],
         note=request.correctionNote,
+        c=json_value(private_choices(attempt)),
         id=attempt_id,
     )
     instance = create_instance(connection, model["id"], user)

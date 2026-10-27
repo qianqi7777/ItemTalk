@@ -85,3 +85,41 @@ def test_download_page_expansion_does_not_recursively_crawl_returned_html(client
     )
     assert run_once(UUID(product["knowledgeJobId"]))
     assert client.get(f"/api/v1/me/products/{product['id']}").json()["knowledgeStatus"] == "ready"
+
+
+def test_product_page_can_reach_official_support_page_and_manual(client, monkeypatch):
+    from tests.test_parser import pdf_bytes
+
+    register_login(client)
+    product = identified_product(client)
+    with transaction() as c:
+        execute(c, "UPDATE brands SET official_domains='[\"brand.example\"]'::jsonb")
+    monkeypatch.setenv("MODEL_PROVIDER", "dashscope")
+    settings.cache_clear()
+    monkeypatch.setattr(
+        SearchGateway,
+        "search",
+        lambda *_: [{"url": "https://brand.example/product/G3", "title": "Product"}],
+    )
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if url == "https://brand.example/product/G3":
+            return (
+                url,
+                "text/html",
+                b'<h1>Product</h1><a href="/support/G3">Support and downloads</a>',
+            )
+        if "/support/" in url:
+            return url, "text/html", b'<a href="/files/manual.pdf">Manual</a>'
+        assert url.endswith("manual.pdf")
+        return url, "application/pdf", pdf_bytes(None, "", text=b"DEMO-100 CN Official manual")
+
+    monkeypatch.setattr(knowledge, "fetch_public", fetch)
+    monkeypatch.setattr(
+        ModelGateway, "embed", lambda _s, texts, _u: [[1.0] + [0.0] * 1023 for _ in texts]
+    )
+    assert run_once(UUID(product["knowledgeJobId"]))
+    assert calls[-1] == "https://brand.example/files/manual.pdf"
+    assert client.get(f"/api/v1/me/products/{product['id']}").json()["knowledgeStatus"] == "ready"
