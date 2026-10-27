@@ -90,7 +90,7 @@ class PinnedHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def fetch_public(url, maximum=50 * 1024 * 1024):
+def fetch_public(url, maximum=50 * 1024 * 1024, *, accepted_mimes=None):
     for _ in range(4):
         parts, addresses = public_addresses(url)
         connection = PinnedHTTPS(parts.hostname, addresses[0])
@@ -127,7 +127,7 @@ def fetch_public(url, maximum=50 * 1024 * 1024):
             if response.status != 200:
                 raise DomainError(502, "UPSTREAM_SEARCH_ERROR", "资料下载失败")
             mime = (response.getheader("Content-Type") or "").split(";")[0].lower()
-            if mime not in {"application/pdf", "text/html", "text/plain"}:
+            if mime not in (accepted_mimes or {"application/pdf", "text/html", "text/plain"}):
                 raise DomainError(422, "FILE_TYPE_NOT_ALLOWED", "资料格式不支持")
             chunks, size = [], 0
             while size <= maximum:

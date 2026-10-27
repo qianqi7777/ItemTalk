@@ -24,3 +24,38 @@ test('候选必须经过用户明确确认，低置信度展示提醒', async ()
   await userEvent.click(screen.getByRole('button', { name: '确认此型号' }));
   expect(onConfirm).toHaveBeenCalledWith(candidate);
 });
+
+test('appearance candidates show reference evidence and uncertainty without invented accuracy', async () => {
+  const candidate = {
+    candidateId: 'private-candidate',
+    basis: 'appearance' as const,
+    brandName: 'Acme',
+    modelCode: 'Phone 16',
+    confidence: 0.6,
+    evidence: '镜头布局相似',
+    matchReasons: ['镜头排列相似'],
+    differences: ['尚未看到侧边按键'],
+    missingEvidence: ['需要正面照片'],
+    referenceImage: 'data:image/jpeg;base64,ZmFrZQ==',
+    sources: [
+      {
+        id: 'source',
+        title: 'Phone 16 技术规格',
+        url: 'https://vendor.example/phone',
+        sourceKind: 'official' as const,
+      },
+    ],
+  };
+  render(
+    <CandidateList candidates={[candidate]} busy={false} onConfirm={vi.fn()} />,
+  );
+  expect(
+    screen.getByRole('img', { name: 'Acme Phone 16 参考图' }),
+  ).toBeVisible();
+  expect(screen.getByText('镜头排列相似')).toBeVisible();
+  expect(screen.getByText('需要正面照片')).toBeVisible();
+  expect(
+    screen.getByRole('link', { name: 'Phone 16 技术规格' }),
+  ).toHaveAttribute('href', 'https://vendor.example/phone');
+  expect(screen.queryByText(/60%/)).not.toBeInTheDocument();
+});

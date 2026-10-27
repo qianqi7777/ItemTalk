@@ -41,9 +41,20 @@ class Input(StrictModel):
 class IdentifyRequest(Input):
     inputText: str | None = Field(default=None, min_length=1, max_length=10000)
     supersedesAttemptId: UUID | None = None
+    discardAssetIds: list[UUID] = Field(default_factory=list, max_length=10)
+    rejectedCandidateIds: list[UUID] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")
     def complete(self):
+        if (self.discardAssetIds or self.rejectedCandidateIds) and not self.supersedesAttemptId:
+            raise ValueError("只有补拍轮次可以排除照片或候选")
+        if len(set(self.discardAssetIds)) != len(self.discardAssetIds):
+            raise ValueError("排除照片不能重复")
+        if len(set(self.rejectedCandidateIds)) != len(self.rejectedCandidateIds):
+            raise ValueError("排除候选不能重复")
+        if self.supersedesAttemptId and not self.inputText and not self.assetIds:
+            if self.discardAssetIds or self.rejectedCandidateIds:
+                return self
         return self.validate_input(self.inputText)
 
 
@@ -83,12 +94,19 @@ class ProvidedModel(StrictModel):
 
 class ConfirmRequest(StrictModel):
     productModelId: UUID | None = None
+    candidateId: UUID | None = None
     userProvidedModel: ProvidedModel | None = None
     correctionNote: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
     def exclusive(self):
-        if bool(self.productModelId) == bool(self.userProvidedModel):
+        if (
+            sum(
+                bool(value)
+                for value in (self.productModelId, self.candidateId, self.userProvidedModel)
+            )
+            != 1
+        ):
             raise ValueError("请选择候选或输入型号")
         return self
 
