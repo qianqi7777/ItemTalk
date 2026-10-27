@@ -29,8 +29,11 @@ ANSWER_SYSTEM_PROMPT = (
 
 
 class ModelGateway:
-    def __init__(self, client=None, *, configuration=None, managed_chat=False):
+    def __init__(self, client=None, *, configuration=None, managed_chat=False, managed_roles=None):
         self.config = configuration or settings()
+        self.managed_roles = set(managed_roles or ())
+        if managed_chat:
+            self.managed_roles.add("chat")
         self._subject = "unattributed"
         if configuration is None and self.config.v2_enabled:
             with transaction() as connection:
@@ -42,29 +45,42 @@ class ModelGateway:
                         connection, self.config, selected["chatProfile"]
                     )
                     managed_chat = True
+                    self.managed_roles.add("chat")
                 else:
                     self.config = self.config.model_copy(
                         update={"chat_model": selected["chatModel"]}
                     )
+                for role in ("vision", "stt", "embedding"):
+                    profile = selected.get(role + "Profile", "current")
+                    if profile.startswith("managed_"):
+                        from app.model_configs import resolve_configuration
+
+                        self.config = resolve_configuration(connection, self.config, profile, role)
+                        self.managed_roles.add(role)
         self._owns_client = client is None
         self.managed_chat = managed_chat
         self.client = client or httpx.Client(
             timeout=self.config.model_timeout_seconds, follow_redirects=False
         )
         self.chat_client = self.client
-        if managed_chat and client is None:
+        self.public_client = self.client
+        if self.managed_roles and client is None:
             from app.model_transport import PublicModelTransport
 
-            self.chat_client = httpx.Client(
+            self.public_client = httpx.Client(
                 transport=PublicModelTransport(),
                 timeout=self.config.chat_timeout_seconds,
                 follow_redirects=False,
                 trust_env=False,
             )
+        self.chat_client = self.client_for("chat")
+
+    def client_for(self, role):
+        return self.public_client if role in self.managed_roles else self.client
 
     def close(self):
-        if self.chat_client is not self.client:
-            self.chat_client.close()
+        if self.public_client is not self.client:
+            self.public_client.close()
         if self._owns_client:
             self.client.close()
 
@@ -100,14 +116,14 @@ class ModelGateway:
         provider = config.model_provider if role == "chat" else getattr(config, f"{role}_provider")
         if provider not in {"dashscope", "deepseek", "hunyuan", "openai_compatible"}:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "模型服务未配置")
-        if role == "vision" and provider != "dashscope":
+        if role == "vision" and provider != "dashscope" and role not in self.managed_roles:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "此适配器未验证视觉能力")
-        if role == "embedding" and provider != "dashscope":
+        if role == "embedding" and provider != "dashscope" and role not in self.managed_roles:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "此适配器未验证向量能力")
         base = config.model_base_url if role == "chat" else getattr(config, f"{role}_base_url")
         secret = config.model_api_key if role == "chat" else getattr(config, f"{role}_api_key")
         key = secret.get_secret_value()
-        if role != "chat" and not key and not self.managed_chat:
+        if role != "chat" and not key and not self.managed_roles:
             # 仅同供应商共享 key；切换文本供应商不能把其密钥发给视觉/向量供应商。
             if provider == config.model_provider:
                 key = config.model_api_key.get_secret_value()
@@ -118,7 +134,7 @@ class ModelGateway:
                 self.budget(self._subject)
             started, outcome, usage = time.perf_counter(), "error", None
             try:
-                response = (self.chat_client if role == "chat" else self.client).post(
+                response = self.client_for(role).post(
                     base.rstrip("/") + endpoint,
                     headers={"Authorization": f"Bearer {key}"},
                     json=payload,
@@ -162,7 +178,7 @@ class ModelGateway:
 
     def identify(self, text, images, subject):
         self.budget(subject)
-        if self.config.model_provider == "mock":
+        if self.config.model_provider == "mock" and not (images and "vision" in self.managed_roles):
             return IdentificationOutput.model_validate(
                 {
                     "candidates": [
@@ -261,7 +277,7 @@ class ModelGateway:
         for offset in range(0, len(texts), 10):
             batch = texts[offset : offset + 10]
             self.budget(subject)
-            if self.config.model_provider == "mock":
+            if self.config.model_provider == "mock" and "embedding" not in self.managed_roles:
                 vectors.extend([[1.0] + [0.0] * 1023 for _ in batch])
                 continue
             result = self.request(
@@ -373,7 +389,7 @@ class ModelGateway:
         from app.schemas import GuidanceObservation
 
         self.budget(subject)
-        if self.config.model_provider == "mock":
+        if self.config.model_provider == "mock" and "vision" not in self.managed_roles:
             return GuidanceObservation(
                 observation="演示照片中的按键区域可见", uncertainty="无法判断真实设备状态"
             )

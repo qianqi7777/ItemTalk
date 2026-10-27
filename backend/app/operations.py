@@ -29,6 +29,9 @@ class RuntimeUpdate(BaseModel):
     subjectDailyLimit: int = Field(ge=1, le=1000000)
     backgroundPaused: bool
     chatProfile: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    visionProfile: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    sttProfile: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    embeddingProfile: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def is_admin(connection):
@@ -59,6 +62,10 @@ def runtime(connection):
         "subjectDailyLimit": row["subject_limit"] or config.daily_model_call_limit,
         "backgroundPaused": row["background_paused"],
         "chatProfile": row["chat_profile"],
+        **{
+            role + "Profile": row.get(role + "_profile", "current")
+            for role in ("vision", "stt", "embedding")
+        },
     }
 
 
@@ -80,7 +87,12 @@ def capture(connection):
         if selected is None or not selected.accepted:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "当前模型方案不可用，请管理员回退")
         model = selected.model
-    return {"version": row["version"], "chatProfile": profile, "chatModel": model}
+    return {
+        "version": row["version"],
+        "chatProfile": profile,
+        "chatModel": model,
+        **{role + "Profile": row[role + "Profile"] for role in ("vision", "stt", "embedding")},
+    }
 
 
 @contextmanager
@@ -104,6 +116,7 @@ def profiles(connection=None):
         result += [
             {"id": row["id"], "model": row["model"], "name": row["name"], "accepted": True}
             for row in list_configs(connection)
+            if row.get("role", "chat") == "chat"
         ]
     return result
 
@@ -121,14 +134,25 @@ def update_runtime(connection, request):
         from app.model_configs import resolve_configuration
 
         resolve_configuration(connection, settings(), request.chatProfile)
+    for role in ("vision", "stt", "embedding"):
+        profile = getattr(request, role + "Profile")
+        if profile is not None and profile != "current":
+            if not profile.startswith("managed_"):
+                raise DomainError(422, "VALIDATION_ERROR", "无效的模型配置")
+            from app.model_configs import resolve_configuration
+
+            resolve_configuration(connection, settings(), profile, role)
     changed = one(
         connection,
-        "SELECT itemtalk_update_runtime(:v,:g,:s,:p,:m) AS value",
+        "SELECT itemtalk_update_role_runtime(:v,:g,:s,:p,:m,:vision,:stt,:embedding) AS value",
         v=request.expectedVersion,
         g=request.globalDailyLimit,
         s=request.subjectDailyLimit,
         p=request.backgroundPaused,
         m=request.chatProfile,
+        vision=request.visionProfile,
+        stt=request.sttProfile,
+        embedding=request.embeddingProfile,
     )
     if changed["value"] is None:
         raise DomainError(409, "RESOURCE_CONFLICT", "配置已被修改，请刷新后重试")

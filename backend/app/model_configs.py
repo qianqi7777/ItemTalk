@@ -11,7 +11,15 @@ from uuid import uuid4
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.config import settings
 from app.db import one
@@ -26,9 +34,41 @@ class ModelConfigInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=80)
     baseUrl: str = Field(min_length=8, max_length=500)
-    protocol: Literal["openai_chat", "dashscope_chat"]
+    role: Literal["chat", "vision", "stt", "embedding"] = "chat"
+    protocol: Literal[
+        "openai_chat",
+        "dashscope_chat",
+        "dashscope_audio",
+        "openai_transcription",
+        "openai_embeddings",
+        "dashscope_embeddings",
+    ]
     model: str = Field(pattern=r"^[a-zA-Z0-9_./:-]{1,100}$")
     apiKey: SecretStr = Field(min_length=1, max_length=4096)
+    revision: str | None = Field(default=None, max_length=40)
+    dimensions: int | None = None
+
+    @model_validator(mode="after")
+    def role_protocol(self):
+        allowed = {
+            "chat": {"openai_chat", "dashscope_chat"},
+            "vision": {"openai_chat", "dashscope_chat"},
+            "stt": {"dashscope_audio", "openai_transcription"},
+            "embedding": {embedding_protocol(settings())},
+        }
+        if self.protocol not in allowed[self.role]:
+            raise ValueError("此用途不支持所选协议；向量协议保持服务器预设")
+        if self.role == "embedding":
+            base = settings()
+            if (self.model, self.revision, self.dimensions) != (
+                base.embedding_model,
+                base.embedding_revision,
+                base.embedding_dimensions,
+            ):
+                raise ValueError("向量模型、修订和维度不可更改，只允许更换地址和密钥")
+        elif self.revision is not None or self.dimensions is not None:
+            raise ValueError("只有向量配置包含修订和维度")
+        return self
 
     @field_validator("baseUrl")
     @classmethod
@@ -48,7 +88,9 @@ class ModelConfigInput(BaseModel):
                 or any(c.isspace() or ord(c) < 32 for c in value)
                 or "\\" in value
                 or "%" in parts.netloc
-                or parts.path.rstrip("/").endswith("/chat/completions")
+                or parts.path.rstrip("/").endswith(
+                    ("/chat/completions", "/embeddings", "/audio/transcriptions")
+                )
             ):
                 raise ValueError("invalid base URL")
             try:
@@ -75,6 +117,30 @@ class ModelConfigInput(BaseModel):
 
 class ModelConfigSave(ModelConfigInput):
     testToken: str = Field(min_length=1, max_length=2048)
+
+
+def embedding_protocol(base):
+    return "dashscope_embeddings" if base.embedding_provider == "dashscope" else "openai_embeddings"
+
+
+def presets():
+    base = settings()
+    result = {}
+    for role in ("chat", "vision", "stt", "embedding"):
+        provider = base.model_provider if role == "chat" else getattr(base, f"{role}_provider")
+        protocol = "dashscope_chat" if provider == "dashscope" else "openai_chat"
+        if role == "stt":
+            protocol = "dashscope_audio" if provider == "dashscope" else "openai_transcription"
+        if role == "embedding":
+            protocol = embedding_protocol(base)
+        result[role] = {
+            "model": getattr(base, f"{role}_model"),
+            "baseUrl": base.model_base_url if role == "chat" else getattr(base, f"{role}_base_url"),
+            "protocol": protocol,
+            "revision": base.embedding_revision if role == "embedding" else None,
+            "dimensions": base.embedding_dimensions if role == "embedding" else None,
+        }
+    return result
 
 
 def cipher():
@@ -126,19 +192,30 @@ def verify_proof(value, actor, proof):
 
 
 def apply_configuration(base, value):
-    overrides = dict(
-        model_provider="dashscope" if value.protocol == "dashscope_chat" else "openai_compatible",
-        model_base_url=value.baseUrl,
-        model_api_key=value.apiKey,
-        chat_model=value.model,
+    overrides = {}
+    # Freeze original effective keys before changing any role, so an unrelated
+    # role never inherits a newly supplied credential.
+    if not base._effective_model_keys_frozen:
+        for role in ("vision", "embedding", "stt"):
+            if (
+                not getattr(base, f"{role}_api_key").get_secret_value()
+                and getattr(base, f"{role}_provider") == base.model_provider
+            ):
+                overrides[f"{role}_api_key"] = base.model_api_key
+    prefix = "model" if value.role == "chat" else value.role
+    overrides.update(
+        {
+            f"{prefix}_provider": "dashscope"
+            if value.protocol.startswith("dashscope_")
+            else "openai_compatible",
+            f"{prefix}_base_url": value.baseUrl,
+            f"{prefix}_api_key": value.apiKey,
+            f"{value.role}_model": value.model,
+        }
     )
-    for role in ("vision", "embedding", "stt"):
-        if (
-            not getattr(base, f"{role}_api_key").get_secret_value()
-            and getattr(base, f"{role}_provider") == base.model_provider
-        ):
-            overrides[f"{role}_api_key"] = base.model_api_key
-    return base.model_copy(update=overrides)
+    result = base.model_copy(update=overrides)
+    result._effective_model_keys_frozen = True
+    return result
 
 
 def get_config(connection, profile):
@@ -148,20 +225,32 @@ def get_config(connection, profile):
     return row["value"]
 
 
-def resolve_configuration(connection, base, profile):
+def resolve_configuration(connection, base, profile, role="chat"):
     row = get_config(connection, profile)
-    value = ModelConfigInput(
-        name=row["name"],
-        baseUrl=row["base_url"],
-        protocol=row["protocol"],
-        model=row["model"],
-        apiKey=decrypt_key(row["encrypted_key"]),
-    )
+    if row.get("role", "chat") != role:
+        raise DomainError(422, "VALIDATION_ERROR", "模型配置用途不匹配")
+    try:
+        value = ModelConfigInput(
+            name=row["name"],
+            baseUrl=row["base_url"],
+            protocol=row["protocol"],
+            model=row["model"],
+            apiKey=decrypt_key(row["encrypted_key"]),
+            role=role,
+            revision=row.get("embedding_revision"),
+            dimensions=row.get("dimensions"),
+        )
+    except ValidationError:
+        raise DomainError(
+            503,
+            "MODEL_CONFIG_UNAVAILABLE",
+            "已保存的模型配置与服务器预设不兼容，请切回服务器预设后重新配置",
+        ) from None
     return apply_configuration(base, value)
 
 
 def list_configs(connection):
-    return one(connection, "SELECT itemtalk_model_config_list() AS value")["value"]
+    return one(connection, "SELECT itemtalk_role_model_config_list() AS value")["value"]
 
 
 def encryption_ready():
@@ -175,13 +264,16 @@ def encryption_ready():
 def save_config(connection, value):
     return one(
         connection,
-        "SELECT itemtalk_add_model_config(:p,:n,:b,:w,:m,:k) AS value",
+        "SELECT itemtalk_add_role_model_config(:p,:n,:b,:w,:m,:k,:r,:e,:d) AS value",
         p="managed_" + uuid4().hex,
         n=value.name,
         b=value.baseUrl,
         w=value.protocol,
         m=value.model,
         k=encrypt_key(value.apiKey.get_secret_value()),
+        r=value.role,
+        e=value.revision,
+        d=value.dimensions,
     )["value"]
 
 
@@ -190,6 +282,10 @@ def probe(value, subject, *, client=None, charge=None):
     from app.adapters import ModelGateway
 
     cipher()
+    if value.role != "chat":
+        from app.model_probes import probe_role
+
+        return probe_role(value, subject, client=client, charge=charge)
     started = time.monotonic()
     gateway = ModelGateway(configuration=apply_configuration(settings(), value), managed_chat=True)
     charge = charge or (lambda: gateway.budget(subject))

@@ -184,6 +184,11 @@ def admin_model_configs(current=Depends(user)):
             "items": model_configs.list_configs(connection),
             "encryptionReady": model_configs.encryption_ready(),
             "activeProfile": operations.runtime(connection)["chatProfile"],
+            "activeProfiles": {
+                role: operations.runtime(connection)[role + "Profile"]
+                for role in ("chat", "vision", "stt", "embedding")
+            },
+            "presets": model_configs.presets(),
         }
 
 

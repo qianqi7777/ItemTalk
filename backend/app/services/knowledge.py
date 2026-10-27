@@ -594,7 +594,7 @@ def embed_task(job):
                 publish_chunk_batch(connection, model, document, batch, vectors)
             progress(job, "embedding", int(100 * (offset + len(batch)) / len(pending)))
     finally:
-        gateway.client.close()
+        gateway.close()
     with transaction() as connection:
         parent_fenced(connection, job)
         require_public_document(connection, model, document)

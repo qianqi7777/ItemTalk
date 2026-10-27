@@ -193,7 +193,7 @@ def evaluate(cases, generate_answers=False, details=None):
                     }
                 )
     finally:
-        gateway.client.close()
+        gateway.close()
 
     def average(values):
         return sum(values) / len(values) if values else None

@@ -5,6 +5,7 @@ import {
   Card,
   Input,
   Modal,
+  Radio,
   Select,
   Space,
   Table,
@@ -18,6 +19,23 @@ export type RuntimeConfig = {
   subjectDailyLimit: number;
   backgroundPaused: boolean;
   chatProfile: string;
+  visionProfile?: string;
+  sttProfile?: string;
+  embeddingProfile?: string;
+};
+type Role = 'chat' | 'vision' | 'stt' | 'embedding';
+const roleLabels: Record<Role, string> = {
+  chat: '文本模型',
+  vision: '图像模型',
+  stt: '录音转写',
+  embedding: '向量模型',
+};
+type Preset = {
+  model: string;
+  baseUrl: string;
+  protocol: string;
+  revision?: string | null;
+  dimensions?: number | null;
 };
 type SavedModelConfig = {
   id: string;
@@ -26,11 +44,14 @@ type SavedModelConfig = {
   protocol: string;
   model: string;
   created_at: string;
+  role?: Role;
 };
 export type ModelConfigListing = {
   encryptionReady: boolean;
   activeProfile: string;
   items: SavedModelConfig[];
+  activeProfiles?: Partial<Record<Role, string>>;
+  presets?: Record<Role, Preset>;
 };
 type Draft = {
   name: string;
@@ -46,7 +67,7 @@ const emptyDraft: Draft = {
   model: '',
   apiKey: '',
 };
-const protocols = [
+const chatProtocols = [
   { value: 'openai_chat', label: 'Chat Completions 兼容' },
   { value: 'dashscope_chat', label: '百炼 Chat Completions（关闭思考）' },
 ];
@@ -60,6 +81,7 @@ export function ModelConfigs({
   runtime: RuntimeConfig;
   onSaved: () => Promise<void>;
 }) {
+  const [role, setRole] = useState<Role>('chat');
   const [draft, setDraft] = useState(emptyDraft);
   const [tested, setTested] = useState<{
     token: string;
@@ -69,6 +91,48 @@ export function ModelConfigs({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const pending = useRef({ body: '', key: '' });
+  const preset = listing.presets?.[role];
+  const currentProfile =
+    listing.activeProfiles?.[role] ?? runtime[`${role}Profile`] ?? 'current';
+  const current = listing.items.find((item) => item.id === currentProfile);
+  const protocols =
+    role === 'stt'
+      ? [
+          { value: 'dashscope_audio', label: '百炼音频消息转写' },
+          {
+            value: 'openai_transcription',
+            label: 'Audio Transcriptions 兼容（文件转写）',
+          },
+        ]
+      : role === 'embedding'
+        ? [
+            {
+              value: preset?.protocol ?? 'dashscope_embeddings',
+              label: 'Embeddings（保持服务器预设）',
+            },
+          ]
+        : chatProtocols;
+  const switchRole = (next: Role) => {
+    if (busy) return;
+    setRole(next);
+    const defaults = listing.presets?.[next];
+    setDraft({
+      ...emptyDraft,
+      baseUrl: defaults?.baseUrl ?? '',
+      model: defaults?.model ?? '',
+      protocol:
+        defaults?.protocol ??
+        (next === 'stt'
+          ? 'dashscope_audio'
+          : next === 'embedding'
+            ? 'dashscope_embeddings'
+            : 'openai_chat'),
+    });
+    setTested(null);
+    setError('');
+    setNotice('');
+    pending.current = { body: '', key: '' };
+  };
   useEffect(() => {
     if (!tested) return;
     const timer = setTimeout(
@@ -97,14 +161,22 @@ export function ModelConfigs({
         '/admin/model-configs/test',
         {
           method: 'POST',
-          body: JSON.stringify(draft),
+          body: JSON.stringify({
+            ...draft,
+            role,
+            ...(role === 'embedding'
+              ? { revision: preset?.revision, dimensions: preset?.dimensions }
+              : {}),
+          }),
         },
       );
       setTested({
         token: result.testToken,
         expiresAt: Date.now() + result.validForSeconds * 1000,
       });
-      setNotice('测试通过：普通回复、JSON 和流式输出可用。可以保存并启用。');
+      setNotice(
+        `测试通过：${role === 'chat' ? '普通回复、JSON 和流式输出可用' : role === 'vision' ? '图片识别和 JSON 输出可用' : role === 'stt' ? '固定录音转写可用' : '批量向量及 1024 维输出有效'}。可以保存并启用。`,
+      );
     } catch (failure) {
       setError(
         failure instanceof Error ? failure.message : '测试失败，请检查配置',
@@ -122,7 +194,8 @@ export function ModelConfigs({
         globalDailyLimit: runtime.globalDailyLimit,
         subjectDailyLimit: runtime.subjectDailyLimit,
         backgroundPaused: runtime.backgroundPaused,
-        chatProfile: profile,
+        chatProfile: role === 'chat' ? profile : runtime.chatProfile,
+        ...(role === 'chat' ? {} : { [`${role}Profile`]: profile }),
       }),
     });
   };
@@ -136,7 +209,14 @@ export function ModelConfigs({
     setError('');
     let created = false;
     try {
-      const body = JSON.stringify({ ...draft, testToken: tested.token });
+      const body = JSON.stringify({
+        ...draft,
+        role,
+        ...(role === 'embedding'
+          ? { revision: preset?.revision, dimensions: preset?.dimensions }
+          : {}),
+        testToken: tested.token,
+      });
       if (pending.current.body !== body)
         pending.current = { body, key: newKey() };
       const result = await api<SavedModelConfig>('/admin/model-configs', {
@@ -145,7 +225,16 @@ export function ModelConfigs({
         headers: { 'Idempotency-Key': pending.current.key },
       });
       created = true;
-      setDraft(emptyDraft);
+      setDraft(
+        role === 'chat'
+          ? emptyDraft
+          : {
+              ...emptyDraft,
+              model: preset?.model ?? '',
+              baseUrl: preset?.baseUrl ?? '',
+              protocol: preset?.protocol ?? draft.protocol,
+            },
+      );
       setTested(null);
       pending.current = { body: '', key: '' };
       await activate(result.id);
@@ -192,18 +281,44 @@ export function ModelConfigs({
   };
   const confirm = (name: string, action: () => Promise<void>) =>
     Modal.confirm({
-      title: '确认启用文本模型',
+      title: `确认启用${roleLabels[role]}`,
       content: `将启用「${name}」。只影响新任务，进行中的任务继续使用原配置。`,
       okText: '确认启用',
+      okButtonProps: { 'aria-label': '确认启用' },
       cancelText: '取消',
       onOk: action,
     });
   const complete = Object.values(draft).every((value) => value.trim());
   return (
-    <Card id="model-configs" title="文本模型配置">
+    <Card id="model-configs" title="模型配置">
       <p>
         填写服务地址、协议、模型名称和密钥，测试后保存并启用。原配置保留，可随时切回。
       </p>
+      <Radio.Group
+        aria-label="模型用途"
+        value={role}
+        disabled={busy}
+        onChange={(event) => switchRole(event.target.value)}
+      >
+        {(Object.keys(roleLabels) as Role[]).map((item) => (
+          <Radio.Button key={item} value={item}>
+            {roleLabels[item]}
+          </Radio.Button>
+        ))}
+      </Radio.Group>
+      <p>
+        当前{roleLabels[role]}：
+        {current
+          ? `${current.name} · ${current.model}`
+          : `服务器预设${preset ? ` · ${preset.model}` : ''}`}
+        。
+      </p>
+      {role === 'embedding' && (
+        <Alert
+          type="info"
+          title={`仅更换地址和 API Key；模型 ${preset?.model ?? ''}、修订 ${preset?.revision ?? ''}、1024 维保持不变，不重建资料向量。新地址必须提供同一模型与修订，能力测试不能证明两个服务的向量空间完全相同。`}
+        />
+      )}
       {!listing.encryptionReady && (
         <Alert
           type="warning"
@@ -214,7 +329,7 @@ export function ModelConfigs({
       {notice && <Alert role="status" type="success" title={notice} />}
       <fieldset
         className="model-config-fields"
-        aria-label="新增文本模型配置"
+        aria-label={`新增${roleLabels[role]}配置`}
         disabled={busy || !listing.encryptionReady}
       >
         <div className="control-grid">
@@ -242,7 +357,7 @@ export function ModelConfigs({
               autoComplete="off"
               onChange={(event) => edit('baseUrl', event.target.value)}
             />
-            <small>填写 HTTPS 基础地址，不含 /chat/completions 或密钥。</small>
+            <small>填写 HTTPS 基础地址，不含接口末尾路径或密钥。</small>
           </label>
           <label className="control-field" htmlFor="model-config-protocol">
             请求协议
@@ -251,7 +366,9 @@ export function ModelConfigs({
               aria-label="请求协议"
               value={draft.protocol}
               options={protocols}
-              disabled={busy || !listing.encryptionReady}
+              disabled={
+                busy || !listing.encryptionReady || role === 'embedding'
+              }
               onChange={(value) => edit('protocol', value)}
             />
           </label>
@@ -262,7 +379,9 @@ export function ModelConfigs({
               aria-label="模型名称"
               maxLength={100}
               value={draft.model}
-              disabled={busy || !listing.encryptionReady}
+              disabled={
+                busy || !listing.encryptionReady || role === 'embedding'
+              }
               placeholder="服务商提供的模型 ID"
               autoComplete="off"
               onChange={(event) => edit('model', event.target.value)}
@@ -285,8 +404,8 @@ export function ModelConfigs({
           </label>
           <div className="control-footer">
             <p>
-              测试发送 3
-              次固定内容请求，会消耗少量供应商额度并计入网站调用额度。仅切换文本模型。
+              测试发送{role === 'chat' ? ' 3 ' : ' 1 '}
+              次固定样例请求，会消耗少量供应商额度并计入网站调用额度。只切换当前用途。
             </p>
             <Space wrap>
               <Button
@@ -311,7 +430,9 @@ export function ModelConfigs({
       <Table<SavedModelConfig>
         rowKey="id"
         size="small"
-        dataSource={listing.items}
+        dataSource={listing.items.filter(
+          (item) => (item.role ?? 'chat') === role,
+        )}
         scroll={{ x: 700 }}
         pagination={false}
         locale={{ emptyText: '尚无新增配置，当前仍使用服务器预设。' }}
@@ -322,7 +443,7 @@ export function ModelConfigs({
           {
             title: '状态与操作',
             render: (_, row) =>
-              runtime.chatProfile === row.id ? (
+              currentProfile === row.id ? (
                 <Tag color="green">当前使用</Tag>
               ) : (
                 <Button
@@ -336,9 +457,35 @@ export function ModelConfigs({
           },
         ]}
       />
-      <p>
-        切回服务器预设：在下方“运行控制”选择原模型，再保存运行配置。网站日调用计数不会因切换而清零。
-      </p>
+      <Button
+        disabled={busy || currentProfile === 'current'}
+        onClick={() =>
+          confirm('服务器预设', async () => {
+            setBusy(true);
+            setError('');
+            try {
+              await activate('current');
+              setNotice(`已切回${roleLabels[role]}服务器预设。`);
+            } catch (failure) {
+              setError(
+                failure instanceof Error
+                  ? failure.message
+                  : '切回失败，请刷新重试',
+              );
+            } finally {
+              try {
+                await onSaved();
+              } catch {
+                setError('刷新失败，请刷新页面确认当前配置。');
+              }
+              setBusy(false);
+            }
+          })
+        }
+      >
+        切回服务器预设
+      </Button>
+      <p>各用途独立启用。网站日调用计数不会因切换而清零。</p>
     </Card>
   );
 }

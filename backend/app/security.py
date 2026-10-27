@@ -93,7 +93,12 @@ def consume(connection, subject, bucket, maximum):
         maximum=maximum,
     )
     if not row:
-        raise DomainError(429, "RATE_LIMITED", "请求额度已用完，请稍后再试")
+        message = "请求额度已用完，请稍后再试"
+        if subject == "model:global":
+            message = "站内全站日调用额度已用完，请管理员调整额度或等待每日重置"
+        elif subject.startswith("model:"):
+            message = "站内个人日调用额度已用完，请管理员调整额度或等待每日重置"
+        raise DomainError(429, "RATE_LIMITED", message)
 
 
 def idempotent(connection, user, operation, key, body):

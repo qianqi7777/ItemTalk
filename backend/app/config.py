@@ -6,7 +6,7 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -35,6 +35,7 @@ class PriceRate(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    _effective_model_keys_frozen: bool = PrivateAttr(default=False)
     environment: str = "development"
     database_url: SecretStr | None = None
     db_host: str = "localhost"
