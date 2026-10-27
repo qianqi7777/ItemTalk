@@ -149,10 +149,46 @@ def test_search_outage_keeps_observation_and_targeted_photo_request(monkeypatch)
         value = service.recognize(
             gateway, [(picture(), "image/jpeg")], "", {}, "user", search=Search()
         )
-    assert value["candidates"] == []
+    assert len(value["candidates"]) == 1
+    assert value["candidates"][0]["modelCode"] == "iPhone 16"
+    assert value["candidates"][0]["evidenceLevel"] == "visual_guess"
+    assert value["candidates"][0]["sources"] == []
     assert value["analysis"]["observation"]["category"] == "智能手机"
     assert value["analysis"]["photoRequests"][0]["target"] == "front"
     assert value["analysis"]["researchStatus"] == "unavailable"
+
+
+def test_guesses_are_private_selectable_and_rejected_aliases_do_not_return():
+    service = importlib.import_module("app.services.recognition")
+    models = importlib.import_module("app.recognition_models")
+    obs = models.Observation(**observation())
+    guesses = service.selectable_candidates(obs, models.Comparison(), [], {}, "")
+    assert len(guesses) == 1 and guesses[0]["candidateId"]
+    assert "productModelId" not in guesses[0] and guesses[0]["referenceImage"] is None
+    assert (
+        service.selectable_candidates(
+            obs, models.Comparison(), [], {"rejectedModels": ["苹果 iPhone 16"]}, ""
+        )
+        == []
+    )
+
+
+def test_reference_supported_choice_wins_over_duplicate_visual_guess():
+    service = importlib.import_module("app.services.recognition")
+    models = importlib.import_module("app.recognition_models")
+    obs = models.Observation(**observation())
+    result = models.Comparison(candidates=[matching(brandName="Apple", modelCode="iPhone 16")])
+    refs = [
+        {
+            "id": "ref",
+            "url": "https://apple.com/16",
+            "title": "iPhone 16",
+            "text": "Apple iPhone 16",
+            "sourceKind": "official",
+        }
+    ]
+    choices = service.selectable_candidates(obs, result, refs, {}, "")
+    assert len(choices) == 1 and choices[0]["evidenceLevel"] == "reference_supported"
 
 
 def test_exhausted_search_budget_preserves_observation_and_explains_scope(monkeypatch):

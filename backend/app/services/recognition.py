@@ -73,6 +73,7 @@ def candidates_from_sources(comparison, references, previous, notes, registered_
                 if labeled_value(item.hardwareRevision, (notes,), hardware=True)
                 else None,
                 "basis": "appearance",
+                "evidenceLevel": "reference_supported",
                 "confidence": 0.6,
                 "strength": item.strength,
                 "evidence": "；".join(item.matchReasons)[:1000],
@@ -87,6 +88,47 @@ def candidates_from_sources(comparison, references, previous, notes, registered_
             }
         )
         seen.add(identity)
+    return result[:3]
+
+
+def selectable_candidates(
+    observation, comparison, references, previous, notes, registered_domains=None, *, existing=None
+):
+    result = (
+        list(existing)
+        if existing is not None
+        else candidates_from_sources(comparison, references, previous, notes, registered_domains)
+    )
+    excluded = {identity_key(value) for value in previous.get("rejectedModels", [])}
+    excluded.update(identity_key(row["brandName"] + row["modelCode"]) for row in result)
+    for guess in observation.hypotheses:
+        if len(result) >= 3:
+            break
+        identity = identity_key(guess.brandName + guess.modelCode)
+        if identity in excluded or not guess.brandName.strip() or not guess.modelCode.strip():
+            continue
+        result.append(
+            {
+                "candidateId": str(uuid4()),
+                "brandName": guess.brandName,
+                "modelCode": guess.modelCode,
+                "region": None,
+                "hardwareRevision": None,
+                "basis": "appearance",
+                "evidenceLevel": "visual_guess",
+                "confidence": 0.0,
+                "strength": "possible",
+                "evidence": guess.reason,
+                "matchReasons": [guess.reason],
+                "differences": [],
+                "missingEvidence": ["外观猜测，尚未通过产品资料核实；请由你确认或继续补充"],
+                "referenceImage": None,
+                "sources": [],
+            }
+        )
+        excluded.add(identity)
+        if len(result) >= 3:
+            break
     return result[:3]
 
 
@@ -201,22 +243,27 @@ def recognize(
             if not references:
                 analysis["researchStatus"] = "no_sources"
                 return {
-                    "candidates": [],
+                    "candidates": selectable_candidates(
+                        observation, Comparison(), [], previous, notes
+                    ),
                     "analysis": analysis,
                     "clarification": (
-                        "已完成外观判断，暂未找到足以支持具体型号的资料。"
-                        "可以按建议补拍或补充品牌线索。"
+                        "已列出外观猜测，产品资料暂未核实。"
+                        "可以选择你确认的型号，或排除后补充文字、照片。"
                     ),
                 }
             on_progress("comparing", 70)
             comparison = compare(
                 gateway, images, observation, references, {**prior, "userNotes": notes}, subject
             )
-            candidates = candidates_from_sources(
+            supported = candidates_from_sources(
                 comparison, references, previous, notes, registered_domains
             )
+            candidates = selectable_candidates(
+                observation, comparison, references, previous, notes, registered_domains
+            )
             analysis.update(
-                researchStatus="found" if candidates else "no_match",
+                researchStatus="found" if supported else "no_match",
                 photoRequests=[
                     p.model_dump()
                     for p in (
@@ -239,7 +286,7 @@ def recognize(
             raise
         analysis["researchStatus"] = "limited" if error.status in {429, 504} else "unavailable"
         return {
-            "candidates": [],
+            "candidates": selectable_candidates(observation, Comparison(), [], previous, notes),
             "analysis": analysis,
             "clarification": "已保留外观判断和补拍建议，资料比对未完成：" + error.message,
         }

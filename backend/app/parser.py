@@ -73,6 +73,10 @@ def parse_document(data, mime):
         if result.returncode or len(result.stdout) > 8 * 1024 * 1024:
             raise ValueError("Parser failed")
         pages = json.loads(result.stdout)
+        if pages and mime == "application/pdf" and not any(text.strip() for _, text in pages):
+            raise DomainError(
+                422, "SOURCE_UNVERIFIED", "PDF没有可提取文字，可能是扫描版，请使用可读取文字的版本"
+            )
         if not pages or not any(text.strip() for _, text in pages):
             raise DomainError(422, "SOURCE_UNVERIFIED", "资料解析失败或缺少可用文字")
         return pages

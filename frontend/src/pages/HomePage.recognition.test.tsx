@@ -77,6 +77,79 @@ beforeEach(() => {
   sessionStorage.clear();
 });
 
+test('刷新页面后保留待排除的候选，再继续补充', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  sessionStorage.setItem('itemtalk.recognition:viewer', id);
+  vi.mocked(api).mockImplementation(async (path) => {
+    if (path === '/me/products') return { items: [] };
+    if (path === '/identifications/' + id)
+      return attempt(id, 'waiting_for_user');
+    throw new Error('Unexpected request');
+  });
+  const page = () => (
+    <SessionContext.Provider
+      value={{
+        user: { id: 'viewer', email: 'test@example.com' },
+        refresh: async () => {},
+      }}
+    >
+      <HomePage />
+    </SessionContext.Provider>
+  );
+  const first = render(page());
+  await screen.findByText('Acme · ' + id + ' Phone');
+  await userEvent.click(
+    screen.getByRole('button', { name: '都不是，排除这些候选' }),
+  );
+  expect(
+    screen.getByText('已排除这些候选，请补充文字或照片，再继续判断。'),
+  ).toBeVisible();
+  first.unmount();
+  render(page());
+  await screen.findByText('Acme · ' + id + ' Phone');
+  expect(
+    screen.getByText('已排除这些候选，请补充文字或照片，再继续判断。'),
+  ).toBeVisible();
+});
+
+test('排除候选后等待用户补充，再把排除项随下一轮提交', async () => {
+  vi.mocked(api).mockResolvedValue({ items: [] });
+  vi.mocked(post).mockResolvedValue(attempt('old', 'waiting_for_user'));
+  render(<HomePage />);
+  await userEvent.type(
+    screen.getByRole('textbox', { name: '或者，描述一下你的产品' }),
+    '一台手机',
+  );
+  await userEvent.click(screen.getByRole('button', { name: '开始识别' }));
+  await screen.findByText('Acme · old Phone');
+  await userEvent.click(
+    screen.getByRole('button', { name: '都不是，排除这些候选' }),
+  );
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(
+    screen.getByText('已排除这些候选，请补充文字或照片，再继续判断。'),
+  ).toBeVisible();
+  expect(
+    screen.getByRole('button', { name: '综合照片继续判断' }),
+  ).toBeDisabled();
+  await userEvent.type(
+    screen.getByRole('textbox', { name: '或者，描述一下你的产品' }),
+    '侧面有一个红色按钮',
+  );
+  await userEvent.click(
+    screen.getByRole('button', { name: '综合照片继续判断' }),
+  );
+  expect(post).toHaveBeenLastCalledWith(
+    '/products/identify',
+    expect.objectContaining({
+      supersedesAttemptId: 'old',
+      rejectedCandidateIds: ['old-candidate'],
+      inputText: '侧面有一个红色按钮',
+    }),
+    'test-key',
+  );
+});
+
 test.each(['success', 'failure'])(
   '新识别会话丢弃旧轮询的迟到 %s',
   async (outcome) => {

@@ -11,16 +11,26 @@ from app.errors import DomainError
 from app.fetch import fetch_public, public_addresses
 from app.parser import parse_document
 from app.security import normalize
+from app.services.manual_provenance import linked_manual_is_official
 from app.services.products import new_job
 from app.services.queue import LeaseHeartbeat, fail, fenced, finish, progress
-from app.services.source_discovery import allowed_url, discover_candidates, manual_links
+from app.services.source_discovery import (
+    allowed_url,
+    discover_candidates,
+    manual_links,
+    support_links,
+)
 from app.storage import Storage, immutable_key, sha256
 
 
 def applicable(text, model):
     """拒绝近似/家族型号，并要求明确覆盖指定地区和硬件修订。"""
+    from app.services.recognition_sources import supports_model
+
+    if not supports_model("", model["model_code"], text, trusted_brand=True):
+        return False
     normalized = normalize(text)
-    for value in (model["model_code"], model["region"], model["hardware_revision"]):
+    for value in (model["region"], model["hardware_revision"]):
         if value and not re.search(
             r"(?<![a-z0-9_-])" + re.escape(normalize(value)) + r"(?![a-z0-9_-])", normalized
         ):
@@ -85,7 +95,20 @@ def known_model_sources(connection, model):
     ]
 
 
-def persist_document(connection, model, url, title, mime, data, pages, trusted, language="zh-CN"):
+def persist_document(
+    connection,
+    model,
+    url,
+    title,
+    mime,
+    data,
+    pages,
+    trusted,
+    language="zh-CN",
+    *,
+    official_parent_version_id=None,
+    official_link_url=None,
+):
     """未核验内容仅落在 document_pages；禁止当作知识片段提前发布。"""
     existing = one(
         connection,
@@ -98,6 +121,20 @@ def persist_document(connection, model, url, title, mime, data, pages, trusted, 
         hash=sha256(data),
     )
     if existing:
+        if official_parent_version_id and (
+            existing.get("official_parent_version_id") != official_parent_version_id
+            or existing.get("official_link_url") != official_link_url
+        ):
+            if not linked_manual_is_official(
+                connection,
+                {
+                    **existing,
+                    "url": url,
+                    "official_domains": model["official_domains"],
+                    "model_code": model.get("model_code"),
+                },
+            ):
+                raise DomainError(409, "SOURCE_UNVERIFIED", "已有资料的来源证明不同，不能自动改写")
         # 同 URL/内容哈希复用不可变版本，避免刷新留下未引用的公共对象。
         return existing
     storage = Storage()
@@ -150,9 +187,9 @@ def persist_document(connection, model, url, title, mime, data, pages, trusted, 
         connection,
         (
             "INSERT INTO "
-            "document_versions(document_id,asset_id,sha256,mime_type,fetched_at,parse_status,verification_status,verified_at)"
+            "document_versions(document_id,asset_id,sha256,mime_type,fetched_at,parse_status,verification_status,verified_at,official_parent_version_id,official_link_url)"
             " VALUES (:d,:a,:hash,:mime,now(),'parsed',:status,CASE WHEN :trusted"
-            " THEN now() ELSE NULL END) ON CONFLICT(document_id,sha256) DO UPDATE"
+            " THEN now() ELSE NULL END,:parent,:link) ON CONFLICT(document_id,sha256) DO UPDATE"
             " SET verification_status=CASE WHEN "
             "document_versions.verification_status IN ('revoked','rejected') THEN"
             " document_versions.verification_status ELSE "
@@ -165,6 +202,8 @@ def persist_document(connection, model, url, title, mime, data, pages, trusted, 
         mime=mime,
         status=status,
         trusted=trusted,
+        parent=official_parent_version_id,
+        link=official_link_url,
     )
     for page, text in pages:
         execute(
@@ -298,7 +337,6 @@ def research(job):
     published = 0
     problems = set()
     seen = set()
-    initial_count = len(results)
     queued = {row["url"] for row in results}
     for index in range(settings().search_max_results + 5):
         if index >= len(results):
@@ -308,7 +346,8 @@ def research(job):
         if result["url"] in seen:
             continue
         seen.add(result["url"])
-        if not mock and not allowed_url(result["url"], domains):
+        linked_parent = result.get("officialParentVersionId")
+        if not mock and not linked_parent and not allowed_url(result["url"], domains):
             continue
         progress(job, "parsing", 35)
         try:
@@ -319,27 +358,59 @@ def research(job):
                 data = (identity + "\n长按电源键 3 秒开机。请勿带电拆机。").encode()
             else:
                 url, mime, data = fetch_public(result["url"])
-                if not allowed_url(url, domains):
+                if linked_parent and (url != result["url"] or mime != "application/pdf"):
+                    problems.add("官方手册链接跳转或格式不符")
+                    continue
+                if not allowed_url(url, domains) and not (
+                    linked_parent and url == result["url"] and mime == "application/pdf"
+                ):
                     problems.add("下载跳转到尚未核验的域名")
                     continue
-                if mime == "text/html" and index < initial_count:
-                    # Expand only the initial result level; never recursively crawl PDF links.
-                    results.extend(
-                        link
-                        for link in manual_links(url, data, domains)
-                        if link["url"] not in queued
-                    )
-                    queued.update(row["url"] for row in results)
             with transaction() as connection:
                 fenced(connection, job)
                 version = persist_document(
-                    connection, model, url, result["title"], mime, data, [], False
+                    connection,
+                    model,
+                    url,
+                    result["title"],
+                    mime,
+                    data,
+                    [],
+                    False,
+                    official_parent_version_id=linked_parent,
+                    official_link_url=result["url"] if linked_parent else None,
                 )
                 execute(
                     connection,
                     "UPDATE document_versions SET parse_status='pending' WHERE id=:id",
                     id=version["id"],
                 )
+            depth = result.get("crawlDepth", 0)
+            if mime == "text/html" and not result.get("directPdf") and depth < 2:
+                additions = []
+                for link in manual_links(
+                    url, data, domains, include_linked=True, model_code=model["model_code"]
+                ):
+                    if link["url"] not in queued:
+                        additions.append(
+                            {
+                                **link,
+                                "directPdf": True,
+                                "crawlDepth": depth + 1,
+                                **(
+                                    {"officialParentVersionId": version["id"]}
+                                    if not allowed_url(link["url"], domains)
+                                    else {}
+                                ),
+                            }
+                        )
+                        queued.add(link["url"])
+                if depth == 0:
+                    for link in support_links(url, data, domains, model_code=model["model_code"]):
+                        if link["url"] not in queued:
+                            additions.append({**link, "crawlDepth": 1})
+                            queued.add(link["url"])
+                results[index + 1 : index + 1] = additions
             payload = {
                 "productModelId": str(model_id),
                 "documentVersionId": str(version["id"]),
@@ -362,7 +433,9 @@ def research(job):
             }:
                 raise
             problems.add(
-                "下载或解析失败"
+                "PDF已下载但没有可提取文字，可能是扫描版"
+                if error.message.startswith("PDF没有可提取文字")
+                else "下载或解析失败"
                 if error.code == "UPSTREAM_SEARCH_ERROR"
                 else "资料格式、内容或适用性未通过核验"
             )
@@ -436,17 +509,18 @@ def parent_fenced(connection, job):
         raise DomainError(409, "RESOURCE_CONFLICT", "所属资料构建租约已失效")
 
 
-def task_document(connection, job):
+def task_document(connection, job, *, lock_brand=False):
     parent_fenced(connection, job)
     return one(
         connection,
         (
-            "SELECT v.*,a.object_key,s.url,s.id AS source_id,b.official_domains, "
+            # The only suffix is the fixed lock clause selected by a boolean.
+            "SELECT v.*,a.object_key,s.url,s.id AS source_id,b.official_domains, "  # noqa: S608
             "m.model_code,m.region,m.hardware_revision FROM document_versions v "
             "JOIN assets a ON a.id=v.asset_id JOIN documents d ON "
             "d.id=v.document_id JOIN sources s ON s.id=d.source_id JOIN "
             "product_models m ON m.id=:model JOIN brands b ON b.id=m.brand_id "
-            "WHERE v.id=:version AND a.scope='public'"
+            "WHERE v.id=:version AND a.scope='public'" + (" FOR SHARE OF b" if lock_brand else "")
         ),
         model=job["payload"]["productModelId"],
         version=job["payload"]["documentVersionId"],
@@ -461,21 +535,50 @@ def parse_task(job):
         raise DomainError(409, "SOURCE_UNVERIFIED", "公共资料版本不存在")
     data = Storage().read(document["object_key"])
     pages = parse_document(data, document["mime_type"])
-    trusted = (
-        settings().model_provider == "mock"
-        or official_url(document["url"], document["official_domains"] or [])
-    ) and applicable("\n".join(text for _, text in pages), document)
+    trusted = settings().model_provider == "mock" or official_url(
+        document["url"], document["official_domains"] or []
+    )
+    with transaction() as connection:
+        trusted = (trusted or linked_manual_is_official(connection, document)) and applicable(
+            "\n".join(text for _, text in pages), document
+        )
     with transaction() as connection:
         parent_fenced(connection, job)
-        current = task_document(connection, job)
+        current = task_document(connection, job, lock_brand=True)
+        if not current:
+            raise DomainError(409, "SOURCE_UNVERIFIED", "公共资料版本不存在")
+        authority = settings().model_provider == "mock" or official_url(
+            current["url"], current["official_domains"] or []
+        )
+        if current.get("official_parent_version_id"):
+            authority = linked_manual_is_official(connection, current, lock=True)
+        trusted = (
+            trusted
+            and authority
+            and current["url"] == document["url"]
+            and current["sha256"] == document["sha256"]
+            and applicable("\n".join(text for _, text in pages), current)
+        )
         source = one(
             connection,
-            ("SELECT verification_status FROM sources WHERE id=:id FOR UPDATE"),
+            ("SELECT url,verification_status FROM sources WHERE id=:id FOR UPDATE"),
             id=document["source_id"],
         )
+        locked_version = one(
+            connection,
+            "SELECT verification_status,sha256 FROM document_versions WHERE id=:id FOR UPDATE",
+            id=document["id"],
+        )
         # 来源撤销是运营决定，自动研究不能静默恢复已撤销证据。
-        trusted = trusted and source["verification_status"] not in {"revoked", "rejected"}
-        trusted = trusted and current["verification_status"] not in {"revoked", "rejected"}
+        trusted = (
+            trusted
+            and source
+            and locked_version
+            and source["url"] == document["url"]
+            and source["verification_status"] not in {"revoked", "rejected"}
+            and locked_version["verification_status"] not in {"revoked", "rejected"}
+            and locked_version["sha256"] == document["sha256"]
+        )
         for page, text in pages:
             execute(
                 connection,

@@ -42,7 +42,7 @@ class IdentifyRequest(Input):
     inputText: str | None = Field(default=None, min_length=1, max_length=10000)
     supersedesAttemptId: UUID | None = None
     discardAssetIds: list[UUID] = Field(default_factory=list, max_length=10)
-    rejectedCandidateIds: list[UUID] = Field(default_factory=list, max_length=3)
+    rejectedCandidateIds: list[UUID] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def complete(self):

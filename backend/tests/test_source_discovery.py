@@ -117,3 +117,85 @@ def test_full_registered_candidate_list_still_retains_a_discovered_replacement()
     )
     assert len(results) <= 10
     assert any(row["url"] == "https://brand.example/new.pdf" for row in results)
+
+
+def test_long_navigation_does_not_hide_the_actual_manual():
+    page = b'<a href="/nav">menu</a>' * 468 + b'<a href="/manual.pdf">Manual</a>'
+    assert (
+        manual_links("https://brand.example/support", page, ["brand.example"])[0]["url"]
+        == "https://brand.example/manual.pdf"
+    )
+
+
+def test_external_pdf_is_available_only_when_explicitly_extracting_official_page_links():
+    page = b'<a href="https://cdn.example/file.pdf">Manual</a>'
+    assert manual_links("https://brand.example/support", page, ["brand.example"]) == []
+    assert (
+        manual_links("https://brand.example/support", page, ["brand.example"], include_linked=True)[
+            0
+        ]["url"]
+        == "https://cdn.example/file.pdf"
+    )
+    assert (
+        manual_links(
+            "https://community.brand.example/post", page, ["brand.example"], include_linked=True
+        )
+        == []
+    )
+
+
+def test_product_page_search_result_does_not_stop_manual_discovery():
+    calls = []
+
+    def search(query):
+        calls.append(query)
+        return [
+            {
+                "url": "https://brand.example/product/G3"
+                if len(calls) == 1
+                else "https://brand.example/G3.pdf",
+                "title": "G3",
+            }
+        ]
+
+    results = discover_candidates(
+        {
+            "brand_name": "Brand",
+            "model_code": "G3",
+            "region": None,
+            "official_domains": ["brand.example"],
+        },
+        [],
+        search,
+    )
+    assert len(calls) == 2
+    assert results[0]["url"].endswith("G3.pdf")
+
+
+def test_manual_model_spacing_is_equivalent_but_pro_variant_is_not_base_model():
+    from app.services.knowledge import applicable
+
+    model = {"model_code": "G3MPro", "region": None, "hardware_revision": None}
+    assert applicable("G3M PRO Official manual", model)
+    assert not applicable("G3M PRO Official manual", {**model, "model_code": "G3M"})
+
+
+def test_model_specific_support_and_manual_links_rank_before_navigation():
+    from app.services.source_discovery import support_links
+
+    navigation = b"".join(f'<a href="/support/other-{i}">Support</a>'.encode() for i in range(5))
+    manuals = b"".join(f'<a href="/other-{i}.pdf">Manual</a>'.encode() for i in range(5))
+    page = (
+        navigation
+        + b'<a href="/support/G3M-PRO">Model support</a>'
+        + manuals
+        + b'<a href="/G3M-PRO.pdf">Manual</a>'
+    )
+    support = support_links(
+        "https://brand.example/products/g3", page, ["brand.example"], model_code="G3M PRO"
+    )
+    links = manual_links(
+        "https://brand.example/products/g3", page, ["brand.example"], model_code="G3M PRO"
+    )
+    assert support[0]["url"].endswith("/support/G3M-PRO")
+    assert links[0]["url"].endswith("/G3M-PRO.pdf")

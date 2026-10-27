@@ -59,3 +59,31 @@ test('appearance candidates show reference evidence and uncertainty without inve
   ).toHaveAttribute('href', 'https://vendor.example/phone');
   expect(screen.queryByText(/60%/)).not.toBeInTheDocument();
 });
+
+test('multiple visual guesses expose explicit selection before confirmation', async () => {
+  const onConfirm = vi.fn();
+  const first = {
+    candidateId: 'one',
+    brandName: 'Acme',
+    modelCode: 'Phone 16',
+    basis: 'appearance' as const,
+    evidenceLevel: 'visual_guess' as const,
+    confidence: 0,
+    evidence: '镜头布局猜测',
+  };
+  const second = { ...first, candidateId: 'two', modelCode: 'Phone 17' };
+  render(
+    <CandidateList
+      candidates={[first, second]}
+      busy={false}
+      onConfirm={onConfirm}
+    />,
+  );
+  expect(screen.getAllByText('外观猜测 · 资料尚未核实')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: '确认此型号' })).toBeDisabled();
+  await userEvent.click(
+    screen.getByRole('radio', { name: '选择 Acme Phone 17' }),
+  );
+  await userEvent.click(screen.getByRole('button', { name: '确认此型号' }));
+  expect(onConfirm).toHaveBeenCalledWith(second);
+});

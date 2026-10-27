@@ -9,7 +9,7 @@ from app.errors import DomainError
 from app.parser import parse_document
 
 
-def pdf_bytes(user_password, owner_password, pages=1):
+def pdf_bytes(user_password, owner_password, pages=1, text=b"Official manual"):
     writer = PdfWriter()
     for _ in range(pages):
         writer.add_blank_page(width=100, height=100)
@@ -27,7 +27,7 @@ def pdf_bytes(user_password, owner_password, pages=1):
         {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
     )
     stream = DecodedStreamObject()
-    stream.set_data(b"BT /F1 12 Tf 10 50 Td (Official manual) Tj ET")
+    stream.set_data(b"BT /F1 12 Tf 10 50 Td (" + text + b") Tj ET")
     writer.pages[0][NameObject("/Contents")] = writer._add_object(stream)
     if user_password is not None:
         writer.encrypt(user_password=user_password, owner_password=owner_password)
@@ -51,3 +51,8 @@ def test_readable_encryption_does_not_bypass_page_limit():
     with pytest.raises(DomainError) as error:
         parse_document(pdf_bytes("", "publisher-only", pages=401), "application/pdf")
     assert error.value.code == "SOURCE_UNVERIFIED"
+
+
+def test_image_only_pdf_is_distinguished_from_download_failure():
+    with pytest.raises(DomainError, match="没有可提取文字"):
+        parse_document(pdf_bytes(None, "", text=b""), "application/pdf")

@@ -50,6 +50,7 @@ for (const width of [320, 390, 1440]) {
     const candidates = [
       candidate('Phone 16', '33333333-3333-4333-8333-333333333333'),
       candidate('Phone 17', '44444444-4444-4444-8444-444444444444'),
+      candidate('Phone 18', '55555555-5555-4555-8555-555555555555'),
     ];
     const result = (index: number, status = 'waiting_for_user') => ({
       id: ids[index],
@@ -58,7 +59,16 @@ for (const width of [320, 390, 1440]) {
       roundNo: index + 1,
       maxRounds: 4,
       candidates:
-        status === 'queued' ? [] : index ? [candidates[1]] : candidates,
+        status === 'queued'
+          ? []
+          : index
+            ? [candidates[2]]
+            : candidates.slice(0, 2).map((value) => ({
+                ...value,
+                evidenceLevel: 'visual_guess',
+                sources: [],
+                referenceImage: null,
+              })),
       photos: photos.slice(0, index + 1),
       clarification: '候选来自实际产品资料，外观仍需由你确认。',
       observation:
@@ -126,6 +136,10 @@ for (const width of [320, 390, 1440]) {
           submitted ? ['photo-1', 'photo-2'] : ['photo-1'],
         );
         if (submitted) expect(input.supersedesAttemptId).toBe(ids[0]);
+        if (submitted)
+          expect(input.rejectedCandidateIds).toEqual(
+            candidates.slice(0, 2).map((value) => value.candidateId),
+          );
         submitted++;
         return reply(result(submitted - 1, 'queued'), 202);
       }
@@ -134,13 +148,13 @@ for (const width of [320, 390, 1440]) {
         pathname.endsWith('/confirm')
       ) {
         selected = request.postDataJSON().candidateId;
-        expect(selected).toBe(candidates[1].candidateId);
+        expect(selected).toBe(candidates[2].candidateId);
         return reply(
           {
             id: 'device',
             productModelId: 'model',
             nickname: null,
-            modelCode: 'Phone 17',
+            modelCode: 'Phone 18',
             brandName: 'Acme',
             identityStatus: 'user_confirmed',
             verificationStatus: 'pending',
@@ -173,6 +187,27 @@ for (const width of [320, 390, 1440]) {
       page.getByText('先看看它是什么', { exact: true }),
     ).toBeVisible();
     await expect(page.locator('.candidate')).toHaveCount(2);
+    await expect(
+      page.getByText('外观猜测 · 资料尚未核实', { exact: true }),
+    ).toHaveCount(2);
+    await expect(
+      page.getByRole('button', { name: '确认此型号', exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByRole('radio', { name: '选择 Acme Phone 17', exact: true })
+      .check();
+    await expect(
+      page.getByRole('button', { name: '确认此型号', exact: true }),
+    ).toBeEnabled();
+    await page
+      .getByRole('button', { name: '都不是，排除这些候选', exact: true })
+      .click();
+    expect(submitted).toBe(1);
+    await expect(
+      page.getByText('已排除这些候选，请补充文字或照片，再继续判断。', {
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(
       page.getByRole('button', { name: '综合照片继续判断', exact: true }),
     ).toBeDisabled();
@@ -210,6 +245,6 @@ for (const width of [320, 390, 1440]) {
     });
     await page.getByRole('button', { name: '确认此型号', exact: true }).click();
     await expect(page.getByText('资料已就绪', { exact: true })).toBeVisible();
-    expect(selected).toBe(candidates[1].candidateId);
+    expect(selected).toBe(candidates[2].candidateId);
   });
 }
