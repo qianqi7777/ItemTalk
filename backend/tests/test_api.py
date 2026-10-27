@@ -64,7 +64,7 @@ def test_register_upload_identify_research_chat_sse(client):
     product = post(
         client,
         f"/identifications/{attempt['id']}/confirm",
-        {"productModelId": result["candidates"][0]["productModelId"]},
+        {"candidateId": result["candidates"][0]["candidateId"]},
     ).json()
     assert product["identityStatus"] == "user_confirmed" and product["knowledgeStatus"] == "queued"
     assert run_once()

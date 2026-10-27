@@ -13,11 +13,29 @@ export interface Asset {
   readUrl?: string | null;
 }
 export interface Candidate {
-  productModelId: string;
+  productModelId?: string;
+  candidateId?: string;
   brandName: string;
   modelCode: string;
   confidence: number;
   evidence: string;
+  basis?: 'appearance';
+  strength?: 'likely' | 'possible';
+  matchReasons?: string[];
+  differences?: string[];
+  missingEvidence?: string[];
+  referenceImage?: string | null;
+  sources?: {
+    id: string;
+    title: string;
+    url: string;
+    sourceKind: 'official' | 'third_party';
+  }[];
+}
+export interface PhotoRequest {
+  target: string;
+  reason: string;
+  instruction: string;
 }
 export interface Identification {
   id: string;
@@ -25,6 +43,18 @@ export interface Identification {
   candidates: Candidate[];
   clarification: string | null;
   jobId: string;
+  roundNo?: number;
+  maxRounds?: number;
+  supersededBy?: string | null;
+  photos?: Asset[];
+  observation?: {
+    category: string;
+    brandHint?: string | null;
+    features: string[];
+  } | null;
+  photoRequests?: PhotoRequest[];
+  researchStatus?: string;
+  progress?: { stage?: string; percent?: number };
 }
 export interface ProductInstance {
   id: string;

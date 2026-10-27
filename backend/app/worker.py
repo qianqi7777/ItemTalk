@@ -52,16 +52,47 @@ def identify(job):
         for asset in assets
         if asset["mime_type"].startswith("image/")
     ]
-    if not images and not attempt["input_text"]:
+    if images or (attempt["analysis"] or {}).get("visualSession"):
+        from app.services.recognition import recognize
+
+        gateway = ModelGateway()
+        try:
+            with transaction() as connection:
+                registered = {
+                    row["normalized_name"]: row["official_domains"]
+                    for row in many(
+                        connection,
+                        "SELECT normalized_name,official_domains FROM brands "
+                        "WHERE jsonb_array_length(official_domains)>0 "
+                        "ORDER BY normalized_name LIMIT 200",
+                    )
+                }
+            output = recognize(
+                gateway,
+                images,
+                attempt["input_text"] or "",
+                attempt["analysis"] or {},
+                attempt["user_id"],
+                on_progress=lambda stage, percent: progress(job, stage, percent),
+                registered_domains=registered,
+            )
+        finally:
+            gateway.close()
+    elif not attempt["input_text"]:
         output = {"candidates": [], "clarification": "请先转写录音并确认文字，或上传产品照片"}
     else:
-        output = (
-            ModelGateway().identify(attempt["input_text"], images, attempt["user_id"]).model_dump()
-        )
+        gateway = ModelGateway()
+        try:
+            output = gateway.identify(attempt["input_text"], [], attempt["user_id"]).model_dump()
+        finally:
+            gateway.close()
     with transaction() as connection:
         fenced(connection, job)
         candidates = []
         for candidate in output["candidates"]:
+            if candidate.get("candidateId"):
+                candidates.append(candidate)
+                continue
             model = product_model(
                 connection,
                 candidate["brandName"],
@@ -75,10 +106,11 @@ def identify(job):
             (
                 "UPDATE identification_attempts SET "
                 "status='waiting_for_user',candidates=CAST(:c AS "
-                "jsonb),clarification=:clarification WHERE id=:id"
+                "jsonb),clarification=:clarification,analysis=CAST(:analysis AS jsonb) WHERE id=:id"
             ),
             c=json_value(candidates),
             clarification=output.get("clarification"),
+            analysis=json_value(output.get("analysis") or attempt["analysis"] or {}),
             id=attempt["id"],
         )
         finish(connection, job)

@@ -10,6 +10,7 @@ export default defineConfig({
     'web-help.spec.ts',
     'model-configs-ui.spec.ts',
     'model-roles-ui.spec.ts',
+    'visual-recognition-ui.spec.ts',
   ],
   workers: 1,
   timeout: 60000,

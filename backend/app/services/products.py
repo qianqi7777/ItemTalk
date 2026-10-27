@@ -283,12 +283,28 @@ def identification_view(connection, attempt):
     job = one(
         connection,
         (
-            "SELECT id FROM jobs WHERE user_id=:u AND "
+            "SELECT id,progress FROM jobs WHERE user_id=:u AND "
             "payload->>'identificationId'=:id AND job_type='identify' ORDER BY "
             "created_at DESC LIMIT 1"
         ),
         u=attempt["user_id"],
         id=str(attempt["id"]),
+    )
+    from app.services.uploads import asset_view
+
+    photos = many(
+        connection,
+        "SELECT a.* FROM identification_attempt_attachments i JOIN assets a "
+        "ON a.id=i.asset_id WHERE i.identification_attempt_id=:id AND a.deleted_at IS NULL "
+        "AND a.mime_type LIKE 'image/%' ORDER BY i.sort_order",
+        id=attempt["id"],
+    )
+    analysis = attempt.get("analysis") or {}
+    child = one(
+        connection,
+        "SELECT id FROM identification_attempts WHERE supersedes_attempt_id=:id "
+        "AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        id=attempt["id"],
     )
     return {
         "id": str(attempt["id"]),
@@ -296,6 +312,15 @@ def identification_view(connection, attempt):
         "candidates": attempt["candidates"] or [],
         "clarification": attempt["clarification"],
         "jobId": str(job["id"]),
+        "roundNo": attempt.get("round_no", 1),
+        "maxRounds": 4,
+        "sessionId": str(attempt.get("session_id") or attempt["id"]),
+        "supersededBy": str(child["id"]) if child else None,
+        "observation": analysis.get("observation"),
+        "photoRequests": analysis.get("photoRequests", []),
+        "researchStatus": analysis.get("researchStatus", "not_started"),
+        "progress": job["progress"] or {},
+        "photos": [asset_view(photo) for photo in photos],
     }
 
 
@@ -317,20 +342,106 @@ def create_instance(connection, model_id, user, nickname=None):
 
 def identify(connection, request, user, key):
     require_assets(connection, request.assetIds, user)
+    asset_ids = list(request.assetIds)
+    previous, notes, round_no, root = {}, request.inputText, 1, None
     if request.supersedesAttemptId:
         owned(connection, "identifications", request.supersedesAttemptId, user)
+        parent = one(
+            connection,
+            "SELECT * FROM identification_attempts WHERE id=:id FOR UPDATE",
+            id=request.supersedesAttemptId,
+        )
+        require_latest_identification(connection, parent)
+        if parent["status"] not in {"waiting_for_user", "failed"}:
+            raise DomainError(409, "IDENTIFICATION_NOT_READY", "请等待当前识别完成后再补拍")
+        round_no = parent["round_no"] + 1
+        if round_no > 4:
+            raise DomainError(
+                422, "VALIDATION_ERROR", "已达到4轮识别上限，请选择候选、手动输入或重新开始"
+            )
+        root = parent["session_id"] or parent["id"]
+        old_rows = many(
+            connection,
+            "SELECT i.asset_id,a.mime_type FROM identification_attempt_attachments i "
+            "JOIN assets a ON a.id=i.asset_id WHERE identification_attempt_id=:id "
+            "ORDER BY i.sort_order",
+            id=parent["id"],
+        )
+        old_assets = [row["asset_id"] for row in old_rows]
+        if (
+            parent["status"] == "waiting_for_user"
+            and not request.discardAssetIds
+            and not request.rejectedCandidateIds
+            and not (set(asset_ids) - set(old_assets))
+            and (not request.inputText or request.inputText == parent["input_text"])
+        ):
+            raise DomainError(422, "VALIDATION_ERROR", "请添加照片、补充说明或排除候选后再继续判断")
+        allowed = set(old_assets) | set(asset_ids)
+        if not set(request.discardAssetIds) <= allowed:
+            raise DomainError(422, "VALIDATION_ERROR", "只能移除本次识别中的照片")
+        asset_ids = [
+            value
+            for value in dict.fromkeys(old_assets + asset_ids)
+            if value not in request.discardAssetIds
+        ]
+        valid = {row.get("candidateId"): row for row in parent["candidates"] or []}
+        if not {str(value) for value in request.rejectedCandidateIds} <= valid.keys():
+            raise DomainError(422, "VALIDATION_ERROR", "只能排除上一轮的外观候选")
+        rejected = list((parent["analysis"] or {}).get("rejectedModels", []))
+        rejected += [
+            f"{valid[str(value)]['brandName']} {valid[str(value)]['modelCode']}"
+            for value in request.rejectedCandidateIds
+        ]
+        previous = {
+            "visualSession": (parent["analysis"] or {}).get("visualSession", False)
+            or any(row["mime_type"].startswith("image/") for row in old_rows),
+            "rejectedModels": list(dict.fromkeys(rejected)),
+            "previous": {
+                "observation": (parent["analysis"] or {}).get("observation"),
+                "candidates": [
+                    {
+                        key: value
+                        for key, value in row.items()
+                        if key
+                        in {
+                            "brandName",
+                            "modelCode",
+                            "matchReasons",
+                            "differences",
+                            "missingEvidence",
+                        }
+                    }
+                    for row in parent["candidates"] or []
+                ],
+            },
+        }
+        if parent["input_text"] and request.inputText != parent["input_text"]:
+            notes = "\n".join(filter(None, [parent["input_text"], request.inputText]))
+    if len(asset_ids) > 10 or (notes and len(notes) > 10000):
+        raise DomainError(422, "VALIDATION_ERROR", "识别累计最多10张照片和10000字补充说明")
+    if not notes and not asset_ids:
+        raise DomainError(422, "VALIDATION_ERROR", "至少保留一张照片或补充说明")
+    # Recheck inherited assets too; a previously removed/deleted upload cannot re-enter a round.
+    assets = require_assets(connection, asset_ids, user)
+    if any(row["mime_type"].startswith("image/") for row in assets):
+        previous["visualSession"] = True
+    attempt_id = uuid4()
     attempt = one(
         connection,
         (
             "INSERT INTO "
-            "identification_attempts(user_id,input_text,status,supersedes_attempt_id)"
-            " VALUES (:u,:text,'queued',:old) RETURNING *"
+            "identification_attempts(id,user_id,input_text,status,supersedes_attempt_id,session_id,round_no,analysis)"
+            " VALUES (:id,:u,:text,'queued',:old,:root,:round,CAST(:analysis AS jsonb)) RETURNING *"
         ),
         u=user,
-        text=request.inputText,
+        id=attempt_id,
+        root=root or attempt_id,
+        round=round_no,
+        analysis=json_value(previous),
+        text=notes,
         old=request.supersedesAttemptId,
     )
-    for index, asset_id in enumerate(request.assetIds):
+    for index, asset_id in enumerate(asset_ids):
         execute(
             connection,
             (
@@ -343,8 +454,20 @@ def identify(connection, request, user, key):
             u=user,
             n=index,
         )
-    new_job(connection, "identify", {"identificationId": str(attempt["id"])}, user, key)
+    job = new_job(connection, "identify", {"identificationId": str(attempt["id"])}, user, key)
+    if previous.get("visualSession"):
+        execute(connection, "UPDATE jobs SET max_attempts=1 WHERE id=:id", id=job["id"])
     return identification_view(connection, attempt)
+
+
+def require_latest_identification(connection, attempt):
+    if one(
+        connection,
+        "SELECT id FROM identification_attempts WHERE supersedes_attempt_id=:id "
+        "AND deleted_at IS NULL LIMIT 1",
+        id=attempt["id"],
+    ):
+        raise DomainError(409, "RESOURCE_CONFLICT", "已有更新一轮识别，请使用最新结果")
 
 
 def confirm(connection, attempt_id, request, user):
@@ -354,7 +477,26 @@ def confirm(connection, attempt_id, request, user):
     )
     if attempt["status"] != "waiting_for_user":
         raise DomainError(409, "IDENTIFICATION_NOT_READY", "识别结果尚未准备好或已确认")
-    if request.userProvidedModel:
+    require_latest_identification(connection, attempt)
+    if request.candidateId:
+        candidate = next(
+            (
+                row
+                for row in attempt["candidates"] or []
+                if row.get("candidateId") == str(request.candidateId)
+            ),
+            None,
+        )
+        if candidate is None:
+            missing()
+        model = product_model(
+            connection,
+            candidate["brandName"],
+            candidate["modelCode"],
+            candidate.get("region"),
+            candidate.get("hardwareRevision"),
+        )
+    elif request.userProvidedModel:
         provided = request.userProvidedModel
         model = product_model(
             connection,
@@ -364,7 +506,7 @@ def confirm(connection, attempt_id, request, user):
             provided.hardwareRevision,
         )
     else:
-        candidates = {item["productModelId"] for item in attempt["candidates"] or []}
+        candidates = {item.get("productModelId") for item in attempt["candidates"] or []}
         if str(request.productModelId) not in candidates:
             missing()
         model = one(

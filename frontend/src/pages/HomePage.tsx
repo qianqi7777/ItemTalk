@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Select, Spin, Upload } from 'antd';
+import { Alert, Button, Input, Select } from 'antd';
 import {
-  Check,
   Camera,
+  Check,
   ChevronRight,
   FileImage,
   PackageSearch,
   ShieldCheck,
   Sparkles,
   RotateCcw,
-  Upload as UploadIcon,
 } from 'lucide-react';
-import { api, newKey, post, upload } from '../services/api';
+import { api, newKey, post } from '../services/api';
 import type {
   Asset,
   Candidate,
@@ -19,7 +18,9 @@ import type {
   Job,
   ProductInstance,
 } from '../types/api';
-import { CandidateList } from '../features/products/CandidateList';
+import { RecognitionPhotos } from '../features/products/RecognitionPhotos';
+import { RecognitionResult } from '../features/products/RecognitionResult';
+import { useSession } from '../stores/session';
 import { KnowledgeProgress } from '../features/products/KnowledgeProgress';
 import { usePolling } from '../hooks/usePolling';
 import { ChatPanel } from './ChatPanel';
@@ -31,7 +32,10 @@ import { DeleteAction } from '../components/DeleteAction';
 
 export function HomePage() {
   const [input, setInput] = useState('');
-  const [asset, setAsset] = useState<Asset>();
+  const [photos, setPhotos] = useState<Asset[]>([]);
+  const [discardedPhotos, setDiscardedPhotos] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [recognitionEpoch, setRecognitionEpoch] = useState(0);
   const [attempt, setAttempt] = useState<Identification>();
   const [product, setProduct] = useState<ProductInstance>();
   const [products, setProducts] = useState<ProductInstance[]>([]);
@@ -45,6 +49,25 @@ export function HomePage() {
   const [code, setCode] = useState('');
   const [region, setRegion] = useState('');
   const selectionRevision = useRef(0);
+  const recognitionRevision = useRef(0);
+  const attemptRef = useRef<Identification | undefined>(undefined);
+  const { user } = useSession();
+  const storageKey = user ? `itemtalk.recognition:${user.id}` : null;
+  const rememberAttempt = useCallback(
+    (value?: Identification) => {
+      attemptRef.current = value;
+      setAttempt(value);
+      if (storageKey) {
+        try {
+          if (value) sessionStorage.setItem(storageKey, value.id);
+          else sessionStorage.removeItem(storageKey);
+        } catch {
+          /* The server retains the private round even when browser storage is unavailable. */
+        }
+      }
+    },
+    [storageKey],
+  );
   const selectProduct = useCallback((value?: ProductInstance) => {
     // 切换、删除或重新识别即使回到同一产品，也不能接受此前页面的迟到轮询。
     selectionRevision.current += 1;
@@ -53,29 +76,82 @@ export function HomePage() {
   useEffect(() => {
     let active = true;
     const revision = selectionRevision.current;
+    const recognition = recognitionRevision.current;
     void api<{ items: ProductInstance[] }>('/me/products')
-      .then((response) => {
-        if (!active || revision !== selectionRevision.current) return;
+      .then(async (response) => {
+        if (
+          !active ||
+          revision !== selectionRevision.current ||
+          recognition !== recognitionRevision.current
+        )
+          return;
         setProducts(response.items);
+        const saved = storageKey ? sessionStorage.getItem(storageKey) : null;
+        if (saved && /^[a-f0-9-]{36}$/i.test(saved)) {
+          try {
+            let restored = await api<Identification>(
+              `/identifications/${saved}`,
+            );
+            for (let index = 0; restored.supersededBy && index < 4; index++) {
+              restored = await api<Identification>(
+                `/identifications/${restored.supersededBy}`,
+              );
+            }
+            if (
+              !active ||
+              revision !== selectionRevision.current ||
+              recognition !== recognitionRevision.current
+            )
+              return;
+            if (restored.status !== 'confirmed') {
+              selectProduct(undefined);
+              rememberAttempt(restored);
+              setPhotos(restored.photos ?? []);
+              return;
+            }
+          } catch {
+            /* Expired or deleted drafts must not prevent opening the device workspace. */
+          }
+          if (
+            !active ||
+            revision !== selectionRevision.current ||
+            recognition !== recognitionRevision.current
+          )
+            return;
+          if (storageKey) sessionStorage.removeItem(storageKey);
+        }
         selectProduct(response.items[0]);
       })
       .catch((error) => {
-        if (active && revision === selectionRevision.current)
+        if (
+          active &&
+          revision === selectionRevision.current &&
+          recognition === recognitionRevision.current
+        )
           setError(error.message);
       });
     return () => {
       active = false;
       selectionRevision.current += 1;
     };
-  }, [selectProduct]);
+  }, [selectProduct, storageKey, rememberAttempt]);
   const pollAttempt = useCallback(async () => {
     if (!attempt) return;
+    const revision = recognitionRevision.current;
     try {
-      setAttempt(await api<Identification>(`/identifications/${attempt.id}`));
+      const updated = await api<Identification>(
+        `/identifications/${attempt.id}`,
+      );
+      if (
+        revision === recognitionRevision.current &&
+        attemptRef.current?.id === attempt.id
+      )
+        rememberAttempt(updated);
     } catch (error) {
-      setError(error instanceof Error ? error.message : '查询识别结果失败');
+      if (revision === recognitionRevision.current)
+        setError(error instanceof Error ? error.message : '查询识别结果失败');
     }
-  }, [attempt]);
+  }, [attempt, rememberAttempt]);
   usePolling(
     pollAttempt,
     !!attempt && ['queued', 'processing'].includes(attempt.status),
@@ -107,25 +183,36 @@ export function HomePage() {
       ),
   );
 
-  const identify = async () => {
+  const identify = async (rejectedCandidateIds: string[] = []) => {
+    const revision = ++recognitionRevision.current;
     setBusy(true);
     setError('');
     try {
-      setAttempt(
-        await post<Identification>(
-          '/products/identify',
-          {
-            ...(input.trim() ? { inputText: input.trim() } : {}),
-            ...(asset ? { assetIds: [asset.id] } : {}),
-            ...(attempt ? { supersedesAttemptId: attempt.id } : {}),
-          },
-          newKey(),
-        ),
+      const updated = await post<Identification>(
+        '/products/identify',
+        {
+          ...(input.trim() ? { inputText: input.trim() } : {}),
+          ...(photos.length
+            ? { assetIds: photos.map((photo) => photo.id) }
+            : {}),
+          ...(attempt ? { supersedesAttemptId: attempt.id } : {}),
+          ...(discardedPhotos.length
+            ? { discardAssetIds: discardedPhotos }
+            : {}),
+          ...(rejectedCandidateIds.length ? { rejectedCandidateIds } : {}),
+        },
+        newKey(),
       );
+      if (revision !== recognitionRevision.current) return;
+      rememberAttempt(updated);
+      setPhotos(updated.photos ?? photos);
+      setDiscardedPhotos([]);
+      setInput('');
     } catch (error) {
-      setError(error instanceof Error ? error.message : '识别请求失败');
+      if (revision === recognitionRevision.current)
+        setError(error instanceof Error ? error.message : '识别请求失败');
     } finally {
-      setBusy(false);
+      if (revision === recognitionRevision.current) setBusy(false);
     }
   };
   const confirm = async (candidate?: Candidate) => {
@@ -136,7 +223,9 @@ export function HomePage() {
       const result = await post<ProductInstance>(
         `/identifications/${attempt.id}/confirm`,
         candidate
-          ? { productModelId: candidate.productModelId }
+          ? candidate.candidateId
+            ? { candidateId: candidate.candidateId }
+            : { productModelId: candidate.productModelId }
           : {
               userProvidedModel: {
                 brandName: brand,
@@ -151,7 +240,10 @@ export function HomePage() {
         result,
         ...old.filter((item) => item.id !== result.id),
       ]);
-      setAttempt(undefined);
+      recognitionRevision.current++;
+      rememberAttempt(undefined);
+      setPhotos([]);
+      setDiscardedPhotos([]);
       setJob(undefined);
     } catch (error) {
       setError(error instanceof Error ? error.message : '型号确认失败');
@@ -179,8 +271,13 @@ export function HomePage() {
   };
   const restartIdentification = () => {
     selectProduct(undefined);
-    setAttempt(undefined);
-    setAsset(undefined);
+    recognitionRevision.current++;
+    rememberAttempt(undefined);
+    setRecognitionEpoch((value) => value + 1);
+    setPhotos([]);
+    setDiscardedPhotos([]);
+    setUploading(false);
+    setBusy(false);
     setJob(undefined);
     setInput('');
     setManual(false);
@@ -279,8 +376,10 @@ export function HomePage() {
                 );
                 setProducts(remaining);
                 selectProduct(remaining[0]);
-                setAsset(undefined);
-                setAttempt(undefined);
+                setPhotos([]);
+                setDiscardedPhotos([]);
+                rememberAttempt(undefined);
+                recognitionRevision.current++;
                 setJob(undefined);
                 setInput('');
                 setError('');
@@ -338,49 +437,37 @@ export function HomePage() {
               </div>
               <span className="step-counter">STEP 01</span>
             </div>
-            <Upload.Dragger
-              accept="image/jpeg,image/png,image/webp"
-              showUploadList={false}
-              disabled={busy}
-              beforeUpload={(file) => {
-                if (file.size > 10 * 1024 * 1024) {
-                  setError('图片需小于 10 MB');
-                  return false;
+            <RecognitionPhotos
+              key={recognitionEpoch}
+              photos={photos}
+              disabled={
+                busy ||
+                (!!attempt &&
+                  ['queued', 'processing'].includes(attempt.status)) ||
+                (attempt?.roundNo ?? 0) >= (attempt?.maxRounds ?? 4)
+              }
+              onUploaded={(photo) =>
+                setPhotos((old) =>
+                  old.some((value) => value.id === photo.id)
+                    ? old
+                    : [...old, photo].slice(0, 10),
+                )
+              }
+              onRemove={(id) => {
+                setPhotos((old) => old.filter((value) => value.id !== id));
+                if (attempt?.photos?.some((value) => value.id === id)) {
+                  setDiscardedPhotos((old) => [...new Set([...old, id])]);
+                } else {
+                  void api(`/assets/${id}`, { method: 'DELETE' }).catch(() =>
+                    setError(
+                      '照片已从本轮移除，但上传文件暂未删除，可稍后在账号中清理。',
+                    ),
+                  );
                 }
-                setBusy(true);
-                setError('');
-                void upload(file)
-                  .then(setAsset)
-                  .catch((error) => setError(error.message))
-                  .finally(() => setBusy(false));
-                return false;
               }}
-            >
-              <div className="upload-visual">
-                {asset?.readUrl ? (
-                  <img src={asset.readUrl} alt="已上传的产品照片" />
-                ) : (
-                  <Camera size={35} strokeWidth={1.5} aria-hidden="true" />
-                )}
-              </div>
-              <h3>{asset ? '照片已上传' : '把你的设备，放进这里'}</h3>
-              <p>拖入产品照片，或点击选择图片</p>
-              <span className="upload-prompt">
-                <UploadIcon size={15} aria-hidden="true" />
-                {asset ? '更换照片' : '选择照片'}
-              </span>
-              <small>JPG、PNG、WebP · 最大 10 MB</small>
-            </Upload.Dragger>
-            {asset && (
-              <DeleteAction
-                path={`/assets/${asset.id}`}
-                label="删除照片"
-                explanation="这张私有照片将删除。如果它仍被识别、问答或操作引导引用，需要先删除关联内容。"
-                disabled={busy}
-                onBusyChange={setBusy}
-                onDeleted={() => setAsset(undefined)}
-              />
-            )}
+              onError={setError}
+              onUploading={setUploading}
+            />
             <div className="input-divider">
               <span>也可以用文字开始</span>
             </div>
@@ -389,7 +476,7 @@ export function HomePage() {
             </label>
             <Input.TextArea
               id="product-description"
-              placeholder="例如：Sony WH-1000XM5，或者铭牌上看到的品牌和型号…"
+              placeholder="例如：像一台苹果手机，背面有两个镜头；也可以补充品牌或你注意到的特点…"
               value={input}
               onChange={(event) => setInput(event.target.value)}
               autoSize={{ minRows: 3 }}
@@ -402,49 +489,53 @@ export function HomePage() {
               </small>
               <Button
                 type="primary"
+                aria-label={attempt ? '综合照片继续判断' : '开始识别'}
                 loading={busy}
-                disabled={!asset && !input.trim()}
+                disabled={
+                  busy ||
+                  uploading ||
+                  (!photos.length && !input.trim()) ||
+                  (!!attempt &&
+                    ['queued', 'processing'].includes(attempt.status)) ||
+                  (attempt?.roundNo ?? 0) >= (attempt?.maxRounds ?? 4) ||
+                  (attempt?.status === 'waiting_for_user' &&
+                    !input.trim() &&
+                    !discardedPhotos.length &&
+                    !photos.some(
+                      (photo) =>
+                        !attempt.photos?.some((old) => old.id === photo.id),
+                    ))
+                }
                 onClick={() => void identify()}
               >
-                开始识别
+                {attempt ? '综合照片继续判断' : '开始识别'}
                 <ChevronRight size={16} />
               </Button>
             </div>
             {attempt && (
-              <div className="identification-result" aria-live="polite">
-                {['queued', 'processing'].includes(attempt.status) && (
-                  <div>
-                    <Spin size="small" /> 正在识别产品，请稍候…
-                  </div>
-                )}
-                {attempt.status === 'failed' && (
-                  <Alert
-                    title={
-                      attempt.clarification || '识别失败，请补充信息后重试'
-                    }
-                    type="error"
-                    showIcon
-                  />
-                )}
-                {attempt.status === 'waiting_for_user' && (
+              <div>
+                <RecognitionResult
+                  attempt={attempt}
+                  busy={busy || uploading}
+                  onConfirm={(candidate) => void confirm(candidate)}
+                  onRejectAll={() =>
+                    void identify(
+                      attempt.candidates.flatMap((candidate) =>
+                        candidate.candidateId ? [candidate.candidateId] : [],
+                      ),
+                    )
+                  }
+                  onRestart={restartIdentification}
+                  onAddPhotos={() =>
+                    document
+                      .querySelector<HTMLInputElement>(
+                        '#recognition-photos input[type=file]',
+                      )
+                      ?.click()
+                  }
+                />
+                {['waiting_for_user', 'failed'].includes(attempt.status) && (
                   <>
-                    <div className="section-heading">
-                      <Check size={20} aria-hidden="true" />
-                      <h2>请确认准确型号</h2>
-                    </div>
-                    <p>用户确认后仍需官方来源核验，才会进入公共资料库。</p>
-                    {attempt.clarification && (
-                      <Alert
-                        title={attempt.clarification}
-                        type="warning"
-                        showIcon
-                      />
-                    )}
-                    <CandidateList
-                      candidates={attempt.candidates}
-                      busy={busy}
-                      onConfirm={(candidate) => void confirm(candidate)}
-                    />
                     <Button type="link" onClick={() => setManual(!manual)}>
                       不在列表中？手动输入型号
                     </Button>
@@ -497,8 +588,10 @@ export function HomePage() {
             <div className="photo-tips">
               <FileImage size={20} aria-hidden="true" />
               <div>
-                <strong>把型号拍清楚</strong>
-                <p>优先拍摄底部或背面的铭牌，完整的型号信息会更有帮助。</p>
+                <strong>先拍外观，再一起缩小范围</strong>
+                <p>
+                  先拍完整正面或背面。系统会比较相近产品，再告诉你下一张拍哪里更有用；没有铭牌也能继续。
+                </p>
               </div>
             </div>
             <div className="photo-tips">
