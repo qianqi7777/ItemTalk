@@ -78,6 +78,34 @@ def test_quota_exhaustion_is_not_retried_as_a_search_failure():
     assert len(calls) == 1
 
 
+def test_unrelated_pdf_does_not_stop_exact_model_search_or_displace_the_manual():
+    calls = []
+
+    def search(query):
+        calls.append(query)
+        if len(calls) == 1:
+            return [
+                {"url": f"https://brand.example/unrelated-{n}.pdf", "title": "Other product"}
+                for n in range(10)
+            ]
+        return [
+            {"url": "https://brand.example/hashed-manual.pdf", "title": "EDF702013 official manual"}
+        ]
+
+    results = discover_candidates(
+        {
+            "brand_name": "Brand",
+            "model_code": "EDF702013",
+            "region": None,
+            "official_domains": ["brand.example"],
+        },
+        [],
+        search,
+    )
+    assert len(calls) == 2
+    assert results[0]["url"] == "https://brand.example/hashed-manual.pdf"
+
+
 def test_registered_but_stale_source_does_not_suppress_a_working_replacement():
     results = discover_candidates(
         {

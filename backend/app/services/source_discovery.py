@@ -27,6 +27,17 @@ def discover_candidates(model, known, search):
     domains = model["official_domains"] or []
     results = {}
 
+    def compact(value):
+        return "".join(c for c in value.casefold() if c.isalnum())
+
+    code = compact(model["model_code"])
+
+    def exact(row):
+        return bool(code and code in compact(row["url"] + " " + row.get("title", "")))
+
+    def rank(row):
+        return (not exact(row), not bool(re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)))
+
     def add(rows):
         for row in rows:
             if allowed_url(row["url"], domains):
@@ -38,7 +49,7 @@ def discover_candidates(model, known, search):
         return list(results.values())[:10]
     name = f"{model['brand_name']} {model['model_code']}"
     queries = [
-        f"{name} {model['region'] or ''} 官方 使用手册",
+        f'"{model["model_code"]}" {model["brand_name"]} {model["region"] or ""} 官方 使用手册',
         f"{name} user manual support",
         f"site:{domains[0]} {model['model_code']}",
     ]
@@ -54,17 +65,17 @@ def discover_candidates(model, known, search):
             # Do not amplify an outage; keep registered-source path independent.
             break
         if len(results) > previous_count and any(
-            key not in previous_urls and re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)
+            key not in previous_urls
+            and exact(row)
+            and re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)
             for key, row in results.items()
         ):
             break
-    old = [row for key, row in results.items() if key in registered]
-    new = [row for key, row in results.items() if key not in registered]
+    old = sorted([row for key, row in results.items() if key in registered], key=rank)
+    new = sorted([row for key, row in results.items() if key not in registered], key=rank)
     # Reserve space for both paths; a full stale registry cannot starve replacements.
     selected = (old[:5] + new[:5] + old[5:] + new[5:])[:10]
-    return sorted(
-        selected, key=lambda row: not re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)
-    )
+    return sorted(selected, key=rank)
 
 
 def _add_ranked(result, target, title, model_code, order, limit):

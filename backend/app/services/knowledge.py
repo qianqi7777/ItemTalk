@@ -44,7 +44,7 @@ def official_url(url, domains):
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
-def register_official_source(connection, brand_name, url):
+def register_official_source(connection, brand_name, url, model_code=None):
     """运营登记可信品牌的候选 URL；内容核验和发布仍由研究任务完成。"""
     brand = one(
         connection,
@@ -65,6 +65,25 @@ def register_official_source(connection, brand_name, url):
     )
     if source["verification_status"] in {"revoked", "rejected"}:
         raise DomainError(409, "SOURCE_UNVERIFIED", "已撤销或拒绝的来源不能重新登记")
+    if model_code:
+        models = many(
+            connection,
+            "SELECT m.id FROM product_models m JOIN brands b ON b.id=m.brand_id "
+            "WHERE b.normalized_name=:brand AND m.normalized_model_code=:code",
+            brand=normalize(brand_name),
+            code=normalize(model_code),
+        )
+        if not models:
+            raise DomainError(404, "RESOURCE_NOT_FOUND", "待登记资料的型号不存在")
+        for model in models:
+            execute(
+                connection,
+                "INSERT INTO documents(source_id,logical_key,title,document_type) "
+                "VALUES(:s,:key,:title,'manual') ON CONFLICT(source_id,logical_key) DO NOTHING",
+                s=source["id"],
+                key="model:" + str(model["id"]),
+                title=f"{brand_name} {model_code} 官方候选资料",
+            )
     return source
 
 
@@ -77,6 +96,13 @@ def known_model_sources(connection, model):
     domains = model["official_domains"] or []
     if not domains:
         return []
+    registered = many(
+        connection,
+        "SELECT s.url,d.title FROM sources s JOIN documents d ON d.source_id=s.id "
+        "WHERE d.logical_key=:key AND s.verification_status IN ('pending','verified') "
+        "ORDER BY d.created_at LIMIT 10",
+        key="model:" + str(model.get("id")),
+    )
     rows = many(
         connection,
         "SELECT url FROM sources WHERE verification_status IN ('pending','verified') "
@@ -86,7 +112,7 @@ def known_model_sources(connection, model):
     code = r"[-_]?".join(
         re.escape(part) for part in re.split(r"[-_]", normalize(model["model_code"]))
     )
-    return [
+    return [row for row in registered if official_url(row["url"], domains)] + [
         {"url": row["url"], "title": f"{model['brand_name']} {model['model_code']} 官方资料"}
         for row in rows
         if official_url(row["url"], domains)
@@ -411,7 +437,9 @@ def research(job):
                         if link["url"] not in queued:
                             additions.append({**link, "crawlDepth": 1})
                             queued.add(link["url"])
-                results[index + 1 : index + 1] = additions
+                # Give every search seed a turn before expanding navigation/download links.
+                # A generic regional support page must not consume the whole fetch budget.
+                results.extend(additions)
             payload = {
                 "productModelId": str(model_id),
                 "documentVersionId": str(version["id"]),
