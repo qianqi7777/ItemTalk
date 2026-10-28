@@ -236,3 +236,21 @@ def test_registered_model_manual_with_hashed_url_is_found_without_search(client,
             connection, {**model, "official_domains": ["brand.example"], "brand_name": "Brand"}
         )
         assert found[0]["url"] == url
+
+
+@pytest.mark.postgres
+def test_device_owner_can_read_operator_created_public_build_status(client):
+    from app.services.products import build_for
+    from tests.test_api import identified_product
+
+    register_login(client)
+    product = identified_product(client)
+    with transaction() as connection:
+        execute(
+            connection, "UPDATE jobs SET status='partial_success',lease_token=NULL,lease_until=NULL"
+        )
+        execute(connection, "UPDATE public_builds SET status='partial_success'")
+        job = build_for(connection, UUID(product["productModelId"]), None, None, force=True)
+    assert client.get(f"/api/v1/jobs/{job['id']}").status_code == 200
+    register_login(client, "unrelated@example.com")
+    assert client.get(f"/api/v1/jobs/{job['id']}").status_code == 404
