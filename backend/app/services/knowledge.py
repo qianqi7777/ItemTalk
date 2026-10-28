@@ -11,6 +11,7 @@ from app.errors import DomainError
 from app.fetch import fetch_public, public_addresses
 from app.parser import parse_document
 from app.security import normalize
+from app.services.document_extraction import extract_scanned_pages
 from app.services.manual_provenance import linked_manual_is_official
 from app.services.products import new_job
 from app.services.queue import LeaseHeartbeat, fail, fenced, finish, progress
@@ -433,7 +434,9 @@ def research(job):
             }:
                 raise
             problems.add(
-                "PDF已下载但没有可提取文字，可能是扫描版"
+                error.message
+                if error.message.startswith("扫描页")
+                else "PDF已下载但没有可提取文字，可能是扫描版"
                 if error.message.startswith("PDF没有可提取文字")
                 else "下载或解析失败"
                 if error.code == "UPSTREAM_SEARCH_ERROR"
@@ -527,6 +530,36 @@ def task_document(connection, job, *, lock_brand=False):
     )
 
 
+def require_ocr_authority(connection, job, document):
+    """Do not meter or checkpoint OCR for withdrawn or changed manufacturer evidence."""
+    current = task_document(connection, job, lock_brand=True)
+    if not current or current["sha256"] != document["sha256"] or current["url"] != document["url"]:
+        raise DomainError(409, "SOURCE_UNVERIFIED", "扫描页对应的公共资料版本已变更")
+    trusted = settings().model_provider == "mock" or official_url(
+        current["url"], current["official_domains"] or []
+    )
+    if current.get("official_parent_version_id"):
+        trusted = linked_manual_is_official(connection, current, lock=True)
+    source = one(
+        connection,
+        "SELECT verification_status FROM sources WHERE id=:id FOR SHARE",
+        id=current["source_id"],
+    )
+    version = one(
+        connection,
+        "SELECT verification_status FROM document_versions WHERE id=:id FOR SHARE",
+        id=current["id"],
+    )
+    if (
+        not trusted
+        or not source
+        or not version
+        or source["verification_status"] in {"revoked", "rejected"}
+        or version["verification_status"] in {"revoked", "rejected"}
+    ):
+        raise DomainError(409, "SOURCE_UNVERIFIED", "扫描页官方来源已撤销或尚未核验")
+
+
 def parse_task(job):
     """解析结果先暂存在页表，精确适用性核验通过后才标记可发布。"""
     with transaction() as connection:
@@ -534,7 +567,47 @@ def parse_task(job):
     if not document:
         raise DomainError(409, "SOURCE_UNVERIFIED", "公共资料版本不存在")
     data = Storage().read(document["object_key"])
-    pages = parse_document(data, document["mime_type"])
+    if sha256(data) != document["sha256"]:
+        raise DomainError(409, "SOURCE_UNVERIFIED", "公共资料内容与保存的版本不一致")
+    scanned_pages = []
+    pages = parse_document(
+        data, document["mime_type"], allow_empty_pdf=True, scan_pages=scanned_pages
+    )
+    if scanned_pages:
+        with transaction() as connection:
+            published = one(
+                connection,
+                "SELECT id FROM knowledge_chunks WHERE document_version_id=:v LIMIT 1",
+                v=document["id"],
+            )
+            if published:
+                # Published page text and historical citations are immutable, even after revocation.
+                rows = many(
+                    connection,
+                    "SELECT page_no,extracted_text,locator FROM document_pages "
+                    "WHERE document_version_id=:v ORDER BY page_no",
+                    v=document["id"],
+                )
+                completed = {
+                    row["page_no"]
+                    for row in rows
+                    if (row["locator"] or {}).get("extractionMethod") == "vision_ocr"
+                    and (row["locator"] or {}).get("complete") is True
+                }
+                if set(scanned_pages) - completed:
+                    raise DomainError(
+                        422, "SOURCE_UNVERIFIED", "扫描页属于已发布旧版资料，尚未补齐"
+                    )
+                pages = [(row["page_no"], row["extracted_text"]) for row in rows]
+        if not published:
+            pages = extract_scanned_pages(
+                job,
+                document,
+                data,
+                pages,
+                scanned_pages,
+                lambda connection: require_ocr_authority(connection, job, document),
+            )
     trusted = settings().model_provider == "mock" or official_url(
         document["url"], document["official_domains"] or []
     )
