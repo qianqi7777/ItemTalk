@@ -131,7 +131,10 @@ def accessible_job(connection, job_id, user, is_admin=False):
             "SELECT j.* FROM jobs j WHERE j.id=:id AND (:admin OR j.user_id=:u OR"
             " EXISTS(SELECT 1 FROM job_request_links l JOIN "
             "user_product_instances i ON i.id=l.user_product_instance_id WHERE "
-            "l.job_id=j.id AND l.user_id=:u AND i.deleted_at IS NULL))"
+            "l.job_id=j.id AND l.user_id=:u AND i.deleted_at IS NULL) OR "
+            "EXISTS(SELECT 1 FROM public_builds b JOIN user_product_instances i "
+            "ON i.product_model_id=b.product_model_id WHERE b.job_id=j.id "
+            "AND i.user_id=:u AND i.deleted_at IS NULL))"
         ),
         id=job_id,
         u=user,
