@@ -371,6 +371,7 @@ def research(job):
     problems = set()
     seen = set()
     queued = {row["url"] for row in results}
+    seed_count = len(results)
     for index in range(settings().search_max_results + 5):
         if index >= len(results):
             break
@@ -445,7 +446,11 @@ def research(job):
                             queued.add(link["url"])
                 # Give every search seed a turn before expanding navigation/download links.
                 # A generic regional support page must not consume the whole fetch budget.
-                results.extend(additions)
+                if index < seed_count:
+                    results.extend(additions)
+                else:
+                    # Once seeds had their turn, finish a support-page chain within the budget.
+                    results[index + 1 : index + 1] = additions
             payload = {
                 "productModelId": str(model_id),
                 "documentVersionId": str(version["id"]),

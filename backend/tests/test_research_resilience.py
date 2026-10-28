@@ -16,6 +16,39 @@ from tests.test_api import identified_product
 pytestmark = pytest.mark.postgres
 
 
+def test_ten_search_seeds_still_allow_a_support_page_to_reach_its_pdf(client, monkeypatch):
+    from tests.test_parser import pdf_bytes
+
+    register_login(client)
+    product = identified_product(client)
+    with transaction() as c:
+        execute(c, "UPDATE brands SET official_domains='[\"brand.example\"]'::jsonb")
+    monkeypatch.setenv("MODEL_PROVIDER", "dashscope")
+    settings.cache_clear()
+    monkeypatch.setattr(
+        SearchGateway,
+        "search",
+        lambda *_: [
+            {"url": f"https://brand.example/product/{i}", "title": "Product"} for i in range(10)
+        ],
+    )
+
+    def fetch(url):
+        if "/product/" in url:
+            n = url.rsplit("/", 1)[-1]
+            return url, "text/html", f'<a href="/support/{n}">Support</a>'.encode()
+        if "/support/" in url:
+            return url, "text/html", b'<a href="/manual.pdf">Manual</a>'
+        return url, "application/pdf", pdf_bytes(None, "", text=b"DEMO-100 CN Instructions")
+
+    monkeypatch.setattr(knowledge, "fetch_public", fetch)
+    monkeypatch.setattr(
+        ModelGateway, "embed", lambda _self, texts, _subject: [[1.0] + [0.0] * 1023 for _ in texts]
+    )
+    assert run_once(UUID(product["knowledgeJobId"]))
+    assert client.get(f"/api/v1/me/products/{product['id']}").json()["knowledgeStatus"] == "ready"
+
+
 @pytest.mark.parametrize("failure", ["download", "parse"])
 def test_broken_first_official_candidate_does_not_prevent_later_publication(
     client, monkeypatch, failure
