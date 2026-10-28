@@ -230,7 +230,7 @@ def test_registered_model_manual_with_hashed_url_is_found_without_search(client,
         model = product_model(connection, "Brand", "EDF702013")
         execute(connection, "UPDATE brands SET official_domains='[\"brand.example\"]'::jsonb")
         url = "https://brand.example/20250307182243.pdf"
-        source = register_official_source(connection, "Brand", url, "EDF702013")
+        source = register_official_source(connection, "Brand", url, "EDF702013", rebuild=True)
         assert source["verification_status"] == "pending"
         found = known_model_sources(
             connection, {**model, "official_domains": ["brand.example"], "brand_name": "Brand"}

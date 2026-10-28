@@ -103,6 +103,7 @@ def main():
     source.add_argument("--brand", required=True)
     source.add_argument("--url", required=True)
     source.add_argument("--model-code")
+    source.add_argument("--rebuild", action="store_true")
     probe = commands.add_parser("agent-probe")
     probe.add_argument("--user-id", type=UUID, required=True)
     probe.add_argument("--instance-id", type=UUID, required=True)
@@ -135,7 +136,9 @@ def main():
             if len(args.url) > 2000:
                 parser.error("Source URL exceeds length limit")
             with transaction() as connection:
-                register_official_source(connection, args.brand, args.url, args.model_code)
+                register_official_source(
+                    connection, args.brand, args.url, args.model_code, rebuild=args.rebuild
+                )
             print("Pending official source registered; content verification still required")
         else:
             config = {

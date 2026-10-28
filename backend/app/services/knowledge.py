@@ -44,7 +44,7 @@ def official_url(url, domains):
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
-def register_official_source(connection, brand_name, url, model_code=None):
+def register_official_source(connection, brand_name, url, model_code=None, *, rebuild=False):
     """运营登记可信品牌的候选 URL；内容核验和发布仍由研究任务完成。"""
     brand = one(
         connection,
@@ -54,6 +54,8 @@ def register_official_source(connection, brand_name, url, model_code=None):
     if not brand or not official_url(url, brand["official_domains"] or []):
         raise DomainError(422, "SOURCE_UNVERIFIED", "来源必须属于已登记的品牌官方域名")
     public_addresses(url)
+    if rebuild and not model_code:
+        raise DomainError(422, "VALIDATION_ERROR", "重新构建资料必须指定型号")
     source = one(
         connection,
         "INSERT INTO sources(url,normalized_url,domain,source_type,"
@@ -84,6 +86,10 @@ def register_official_source(connection, brand_name, url, model_code=None):
                 key="model:" + str(model["id"]),
                 title=f"{brand_name} {model_code} 官方候选资料",
             )
+            if rebuild:
+                from app.services.products import build_for
+
+                build_for(connection, model["id"], None, None, force=True)
     return source
 
 
