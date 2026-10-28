@@ -23,7 +23,7 @@ def setup_document(client, monkeypatch, pages=142):
     monkeypatch.setattr(
         knowledge,
         "parse_document",
-        lambda *_: [
+        lambda *_, **_kwargs: [
             (number, f"DEMO-100 CN 第 {number} 页的官方使用说明") for number in range(1, pages + 1)
         ],
     )
