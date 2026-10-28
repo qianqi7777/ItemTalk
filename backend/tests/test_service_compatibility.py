@@ -217,3 +217,22 @@ def test_operator_source_registration_cannot_publish_or_restore_revoked_sources(
         )
         with pytest.raises(DomainError):
             register_official_source(connection, "Sony", url)
+
+
+@pytest.mark.postgres
+def test_registered_model_manual_with_hashed_url_is_found_without_search(client, monkeypatch):
+    from app.services import knowledge
+    from app.services.products import product_model
+
+    register_login(client)
+    monkeypatch.setattr(knowledge, "public_addresses", lambda _url: None)
+    with transaction() as connection:
+        model = product_model(connection, "Brand", "EDF702013")
+        execute(connection, "UPDATE brands SET official_domains='[\"brand.example\"]'::jsonb")
+        url = "https://brand.example/20250307182243.pdf"
+        source = register_official_source(connection, "Brand", url, "EDF702013", rebuild=True)
+        assert source["verification_status"] == "pending"
+        found = known_model_sources(
+            connection, {**model, "official_domains": ["brand.example"], "brand_name": "Brand"}
+        )
+        assert found[0]["url"] == url
