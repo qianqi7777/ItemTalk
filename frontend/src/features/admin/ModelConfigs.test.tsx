@@ -104,6 +104,26 @@ afterEach(async () => {
 });
 
 describe('manual text-model configuration', () => {
+  it('can test a vision Responses configuration with image search', async () => {
+    render(
+      <ModelConfigs
+        listing={{ ...listing, presets }}
+        runtime={runtime}
+        onSaved={refreshed}
+      />,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: '图像模型' }));
+    fill();
+    fireEvent.mouseDown(screen.getByLabelText('请求协议'));
+    fireEvent.click(await screen.findByText('百炼 Responses + 图搜图'));
+    fireEvent.click(screen.getByRole('button', { name: '测试配置' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存并启用' })).toBeEnabled(),
+    );
+    expect(
+      JSON.parse(vi.mocked(api).mock.calls[0][1]!.body as string),
+    ).toMatchObject({ role: 'vision', protocol: 'dashscope_image_search' });
+  });
   it('locks embedding model identity while allowing address/key replacement', async () => {
     render(
       <ModelConfigs

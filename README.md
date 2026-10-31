@@ -48,6 +48,16 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
 uv run python -m app.worker
 ```
 
+## Responses 与图搜图
+
+文本和图像模型支持 Responses 接口，覆盖问答、识别、操作引导、JSON 输出及扫描页 OCR。新环境可在 `.env` 设置 `CHAT_API_PROTOCOL=responses`、`VISION_API_PROTOCOL=responses`；未设置的旧环境继续使用 Chat Completions。后台保存的配置按各自协议执行，启用新配置后新任务生效，历史配置保留。向量仍走 Embeddings，录音转写保持专用协议。
+
+管理员可选“Responses 兼容”“百炼 Responses”或图像专用的“百炼 Responses + 图搜图”。API 基础地址不包含 `/responses`。文本配置测试固定合成输入的文本、JSON、流式及两轮函数调用；依赖供应商不透明思考状态的工具续接暂不支持，会拒绝配置或调用。图搜图配置还须实际返回原生工具调用结果，不能用普通模型猜测代替搜索。
+
+服务器预设只有在实际验证后才设置 `VISION_IMAGE_SEARCH_ENABLED=true`（同时要求百炼视觉模型与 Responses）。搜图仅用于产品识别，不用于普通问答或扫描页 OCR；结果为未核验的相似候选，用户可以确认、排除或继续补拍，官方说明书仍单独核验。工具失败会保留外观判断并尝试现有文字检索，不会自动改用其他供应商或协议。搜图会把照片发送给所配置模型服务，并可能产生额外工具费用。
+
+迁移 `0018_responses_protocol` 只扩展可保存的协议约束，不改历史配置或数据。回退应用保留该迁移；回退到不支持 Responses 的旧应用前，须先恢复服务器预设或原有兼容配置，并处理仍使用 Responses 配置的任务。
+
 ## 验证
 
 `TEST_DATABASE_URL` 必须指向**专用且可清空**的测试库。集成测试会清空其中的业务数据；缺少该配置时，PostgreSQL 用例会显式跳过。

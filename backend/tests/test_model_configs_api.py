@@ -86,6 +86,23 @@ def test_model_config_endpoints_require_active_admin(v2):
     )
 
 
+@pytest.mark.parametrize(
+    "role,protocol", [("chat", "openai_responses"), ("vision", "dashscope_image_search")]
+)
+def test_responses_config_saves_activates_and_freezes_protocol(admin, role, protocol):
+    saved = save(admin, role=role, protocol=protocol)
+    assert saved.status_code == 201
+    profile = saved.json()["id"]
+    assert update(admin, **{role + "Profile": profile}).status_code == 200
+    gateway = ModelGateway()
+    try:
+        assert getattr(gateway.config, role + "_api_protocol") == "responses"
+        assert gateway.config.vision_image_search_enabled is (role == "vision")
+        assert "test-only-new-api-key" not in admin.get("/api/v1/admin/model-configs").text
+    finally:
+        gateway.close()
+
+
 def test_test_and_save_are_separate_from_activation_and_never_return_secret(admin):
     saved = save(admin)
     assert saved.status_code == 201, saved.text

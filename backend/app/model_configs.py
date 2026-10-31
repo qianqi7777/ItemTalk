@@ -38,6 +38,9 @@ class ModelConfigInput(BaseModel):
     protocol: Literal[
         "openai_chat",
         "dashscope_chat",
+        "openai_responses",
+        "dashscope_responses",
+        "dashscope_image_search",
         "dashscope_audio",
         "openai_transcription",
         "openai_embeddings",
@@ -51,8 +54,14 @@ class ModelConfigInput(BaseModel):
     @model_validator(mode="after")
     def role_protocol(self):
         allowed = {
-            "chat": {"openai_chat", "dashscope_chat"},
-            "vision": {"openai_chat", "dashscope_chat"},
+            "chat": {"openai_chat", "dashscope_chat", "openai_responses", "dashscope_responses"},
+            "vision": {
+                "openai_chat",
+                "dashscope_chat",
+                "openai_responses",
+                "dashscope_responses",
+                "dashscope_image_search",
+            },
             "stt": {"dashscope_audio", "openai_transcription"},
             "embedding": {embedding_protocol(settings())},
         }
@@ -89,7 +98,7 @@ class ModelConfigInput(BaseModel):
                 or "\\" in value
                 or "%" in parts.netloc
                 or parts.path.rstrip("/").endswith(
-                    ("/chat/completions", "/embeddings", "/audio/transcriptions")
+                    ("/chat/completions", "/responses", "/embeddings", "/audio/transcriptions")
                 )
             ):
                 raise ValueError("invalid base URL")
@@ -103,9 +112,7 @@ class ModelConfigInput(BaseModel):
                 raise ValueError("nonpublic address")
             return value.rstrip("/")
         except ValueError:
-            raise ValueError(
-                "请填写公网HTTPS API基础地址，不含密钥、查询参数或/chat/completions"
-            ) from None
+            raise ValueError("请填写公网HTTPS API基础地址，不含密钥、查询参数或接口路径") from None
 
     @field_validator("apiKey")
     @classmethod
@@ -129,6 +136,10 @@ def presets():
     for role in ("chat", "vision", "stt", "embedding"):
         provider = base.model_provider if role == "chat" else getattr(base, f"{role}_provider")
         protocol = "dashscope_chat" if provider == "dashscope" else "openai_chat"
+        if role in {"chat", "vision"} and getattr(base, f"{role}_api_protocol") == "responses":
+            protocol = "dashscope_responses" if provider == "dashscope" else "openai_responses"
+            if role == "vision" and base.vision_image_search_enabled and provider == "dashscope":
+                protocol = "dashscope_image_search"
         if role == "stt":
             protocol = "dashscope_audio" if provider == "dashscope" else "openai_transcription"
         if role == "embedding":
@@ -213,6 +224,15 @@ def apply_configuration(base, value):
             f"{value.role}_model": value.model,
         }
     )
+    if value.role in {"chat", "vision"}:
+        overrides[f"{value.role}_api_protocol"] = (
+            "responses"
+            if value.protocol
+            in {"openai_responses", "dashscope_responses", "dashscope_image_search"}
+            else "chat_completions"
+        )
+    if value.role == "vision":
+        overrides["vision_image_search_enabled"] = value.protocol == "dashscope_image_search"
     result = base.model_copy(update=overrides)
     result._effective_model_keys_frozen = True
     return result
@@ -278,7 +298,7 @@ def save_config(connection, value):
 
 
 def probe(value, subject, *, client=None, charge=None):
-    """Three bounded calls with fixed synthetic input; never send an actual user conversation."""
+    """Bounded synthetic text/JSON/SSE checks, plus a Responses function roundtrip."""
     from app.adapters import ModelGateway
 
     cipher()
@@ -297,11 +317,12 @@ def probe(value, subject, *, client=None, charge=None):
         "max_tokens": 64,
         "messages": [{"role": "user", "content": 'Return a JSON object: {"ok":true}.'}],
     }
-    if value.protocol == "dashscope_chat":
+    if value.protocol.startswith("dashscope_"):
         base_payload["enable_thinking"] = False
+    responses = value.protocol in {"openai_responses", "dashscope_responses"}
     checks = []
     try:
-        with request_scope(started + 45):
+        with request_scope(started + (75 if responses else 45)):
             for kind in ("text", "json", "stream"):
                 charge()
                 payload = dict(base_payload)
@@ -309,9 +330,15 @@ def probe(value, subject, *, client=None, charge=None):
                     payload["response_format"] = {"type": "json_object"}
                 if kind == "stream":
                     payload["stream"] = True
+                endpoint = "/chat/completions"
+                if responses:
+                    from app.model_responses import prepare_request
+
+                    endpoint = "/responses"
+                    payload = prepare_request(payload, gateway.config.model_provider)
                 with client.stream(
                     "POST",
-                    value.baseUrl + "/chat/completions",
+                    value.baseUrl + endpoint,
                     headers=headers,
                     json=payload,
                     timeout=15,
@@ -320,6 +347,9 @@ def probe(value, subject, *, client=None, charge=None):
                         # Do not read supplier error bodies into exception/log output.
                         raise response_error(httpx.Response(response.status_code))
                     if kind == "stream":
+                        from app.model_responses import TextPrefix
+
+                        prefix = TextPrefix()
                         content, complete, size = False, False, 0
                         for line in response.iter_lines():
                             size += len(line)
@@ -328,10 +358,19 @@ def probe(value, subject, *, client=None, charge=None):
                             if not line.startswith("data:"):
                                 continue
                             data = line[5:].strip()
-                            if data == "[DONE]":
+                            if data == "[DONE]" and not responses:
                                 complete = True
                                 break
                             event = json.loads(data)
+                            if responses:
+                                from app.model_responses import stream_event
+
+                                delta, complete, _usage = stream_event(event)
+                                delta = prefix.push(delta)
+                                content = content or bool(delta.strip())
+                                if complete:
+                                    break
+                                continue
                             content = content or any(
                                 isinstance(row.get("delta", {}).get("content"), str)
                                 and bool(row["delta"]["content"].strip())
@@ -345,18 +384,100 @@ def probe(value, subject, *, client=None, charge=None):
                             raw += chunk
                             if len(raw) > 65536:
                                 raise ValueError("oversized test response")
-                        content = json.loads(raw)["choices"][0]["message"]["content"]
+                        result = json.loads(raw)
+                        if responses:
+                            from app.model_responses import normalize_response
+
+                            result = normalize_response(
+                                result, gateway.config.model_provider, json_output=kind == "json"
+                            )
+                            if result["choices"][0]["finish_reason"] != "stop":
+                                raise ValueError("incomplete response")
+                        content = result["choices"][0]["message"]["content"]
                         if not isinstance(content, str) or not content.strip():
                             raise ValueError("empty content")
                         if kind == "json" and json.loads(content) != {"ok": True}:
                             raise ValueError("invalid structured content")
                 checks.append(kind)
+            if responses:
+                _probe_responses_tools(
+                    client, value, gateway.config.model_provider, headers, charge
+                )
+                checks.append("tools")
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise DomainError(
-            502, "UPSTREAM_MODEL_ERROR", "模型测试失败：请检查协议、JSON或流式输出能力"
+            502, "UPSTREAM_MODEL_ERROR", "模型测试失败：请检查协议、JSON、流式与工具调用能力"
         ) from None
     finally:
         if owned:
             client.close()
         gateway.close()
     return {"checks": checks, "durationMs": round((time.monotonic() - started) * 1000)}
+
+
+def _probe_responses_tools(client, value, provider, headers, charge):
+    from app.deadlines import remaining
+    from app.model_responses import normalize_response, prepare_request
+
+    def call(payload):
+        charge()
+        with client.stream(
+            "POST",
+            value.baseUrl + "/responses",
+            headers=headers,
+            json=prepare_request(payload, provider),
+            timeout=remaining(15),
+        ) as response:
+            if response.status_code != 200:
+                raise response_error(httpx.Response(response.status_code))
+            raw = b""
+            for chunk in response.iter_bytes():
+                raw += chunk
+                if len(raw) > 65536:
+                    raise ValueError("oversized tool probe")
+        result = normalize_response(json.loads(raw), provider)
+        if result["choices"][0]["finish_reason"] == "length":
+            raise ValueError("incomplete tool probe")
+        return result["choices"][0]["message"]
+
+    messages = [
+        {"role": "user", "content": "Call connectivity_check, then reply OK using its result."}
+    ]
+    payload = {
+        "model": value.model,
+        "max_tokens": 128,
+        "messages": messages,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "connectivity_check",
+                    "description": "Return a fixed synthetic connectivity result.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ],
+        "tool_choice": {"type": "function", "function": {"name": "connectivity_check"}},
+        **({"enable_thinking": False} if provider == "dashscope" else {}),
+    }
+    answer = call(payload)
+    calls = answer.get("tool_calls", [])
+    if (
+        len(calls) != 1
+        or calls[0]["function"]["name"] != "connectivity_check"
+        or json.loads(calls[0]["function"]["arguments"]) != {}
+    ):
+        raise ValueError("required test tool was not called correctly")
+    messages.extend(
+        [
+            {"role": "assistant", **answer},
+            {"role": "tool", "tool_call_id": calls[0]["id"], "content": "OK"},
+        ]
+    )
+    final = call({**payload, "tool_choice": "none"})
+    if final.get("tool_calls") or not final.get("content", "").strip():
+        raise ValueError("tool continuation did not complete")
