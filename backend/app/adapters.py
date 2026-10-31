@@ -114,6 +114,15 @@ class ModelGateway:
         if role == "chat":
             payload = {**payload, "model": config.chat_model}
         provider = config.model_provider if role == "chat" else getattr(config, f"{role}_provider")
+        responses = (
+            role in {"chat", "vision"}
+            and endpoint == "/chat/completions"
+            and (getattr(config, f"{role}_api_protocol") == "responses")
+        )
+        if responses:
+            from app.model_responses import prepare_request
+
+            endpoint, payload = "/responses", prepare_request(payload, provider)
         if provider not in {"dashscope", "deepseek", "hunyuan", "openai_compatible"}:
             raise DomainError(503, "UPSTREAM_MODEL_ERROR", "模型服务未配置")
         if role == "vision" and provider != "dashscope" and role not in self.managed_roles:
@@ -152,9 +161,15 @@ class ModelGateway:
                     raise ValueError("Oversized response")
                 result = response.json()
                 usage = result.get("usage") if isinstance(result, dict) else None
+                if responses:
+                    from app.model_responses import normalize_response
+
+                    result = normalize_response(
+                        result, provider, json_output=bool(payload.get("text", {}).get("format"))
+                    )
                 outcome = "success"
                 return result
-            except (httpx.HTTPError, ValueError) as error:
+            except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
                 # 仅保存固定类型，不记录异常消息（其中可能含请求地址或供应商正文）。
                 outcome = (
                     "timeout"
@@ -645,6 +660,13 @@ class ModelGateway:
         if config.model_provider == "dashscope":
             payload["enable_thinking"] = False
             payload["stream_options"] = {"include_usage": True}
+        responses = config.chat_api_protocol == "responses"
+        endpoint = "/chat/completions"
+        if responses:
+            from app.model_responses import TextPrefix, prepare_request
+
+            endpoint, payload = "/responses", prepare_request(payload, config.model_provider)
+            prefix = TextPrefix()
         total = 0
         for attempt in range(config.upstream_max_attempts):
             if attempt:
@@ -653,7 +675,7 @@ class ModelGateway:
             try:
                 with self.chat_client.stream(
                     "POST",
-                    config.model_base_url.rstrip("/") + "/chat/completions",
+                    config.model_base_url.rstrip("/") + endpoint,
                     headers={"Authorization": f"Bearer {key}"},
                     json=payload,
                     timeout=remaining(config.chat_timeout_seconds),
@@ -671,7 +693,7 @@ class ModelGateway:
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
-                        if data == "[DONE]":
+                        if data == "[DONE]" and not responses:
                             if not total:
                                 raise ValueError("Empty stream")
                             outcome = "success"
@@ -679,6 +701,19 @@ class ModelGateway:
                         if len(data) > 262144:
                             raise ValueError("Oversized event")
                         value = json.loads(data)
+                        if responses:
+                            from app.model_responses import stream_event
+
+                            chunk, complete, event_usage = stream_event(value)
+                            if event_usage is not None:
+                                usage = event_usage
+                            if complete:
+                                if not total:
+                                    raise ValueError("Empty stream")
+                                outcome = "success"
+                                return
+                            chunk = prefix.push(chunk)
+                            value = {"choices": [{"delta": {"content": chunk}}]}
                         if isinstance(value.get("usage"), dict):
                             usage = value["usage"]
                         for choice in value.get("choices", []):
@@ -693,7 +728,7 @@ class ModelGateway:
                                     raise ValueError("Output limit")
                                 yield chunk
                     raise ValueError("Stream ended before DONE")
-            except (httpx.HTTPError, ValueError, TypeError):
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
                 raise DomainError(
                     502, "UPSTREAM_MODEL_ERROR", ("模型流式连接中断，请查询运行状态")
                 ) from None

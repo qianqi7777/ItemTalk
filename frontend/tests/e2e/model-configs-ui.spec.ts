@@ -48,6 +48,7 @@ for (const width of [320, 390, 1440]) {
       if (path === '/admin/audit')
         return reply({ items: [], nextBefore: null });
       if (path === '/admin/model-configs/test') {
+        expect(request.postDataJSON().protocol).toBe('openai_responses');
         tests++;
         return reply({
           testToken: 'synthetic-proof',

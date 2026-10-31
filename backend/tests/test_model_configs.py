@@ -33,6 +33,131 @@ def draft(configs, **changes):
 
 
 @pytest.mark.parametrize(
+    "role,protocol",
+    [
+        ("chat", "openai_responses"),
+        ("chat", "dashscope_responses"),
+        ("vision", "openai_responses"),
+        ("vision", "dashscope_image_search"),
+    ],
+)
+def test_responses_configuration_routes_only_selected_role(configs, role, protocol):
+    value = configs.ModelConfigInput(
+        **{**draft(configs).model_dump(), "role": role, "protocol": protocol}
+    )
+    base = settings()
+    selected = configs.apply_configuration(base, value)
+    assert getattr(selected, role + "_api_protocol") == "responses"
+    assert selected.vision_image_search_enabled is (protocol == "dashscope_image_search")
+    other = "vision" if role == "chat" else "chat"
+    assert getattr(selected, other + "_api_protocol") == getattr(base, other + "_api_protocol")
+
+
+def test_responses_endpoint_is_not_a_valid_base_url(configs):
+    with pytest.raises(ValidationError):
+        configs.ModelConfigInput(
+            **{**draft(configs).model_dump(), "baseUrl": "https://models.example.com/v1/responses"}
+        )
+
+
+def test_responses_probe_validates_text_json_and_completed_stream(configs):
+    from tests.test_model_responses import envelope, events
+
+    def reply(request):
+        assert request.url.path.endswith("/responses")
+        payload = json.loads(request.content)
+        assert payload["store"] is False
+        if payload.get("tools"):
+            if any(item.get("type") == "function_call_output" for item in payload["input"]):
+                return httpx.Response(200, json=envelope("OK"))
+            return httpx.Response(
+                200,
+                json=envelope(
+                    output=[
+                        {
+                            "type": "function_call",
+                            "call_id": "probe-1",
+                            "name": "connectivity_check",
+                            "arguments": "{}",
+                        }
+                    ]
+                ),
+            )
+        if payload.get("stream"):
+            return httpx.Response(
+                200,
+                text=events(
+                    {"type": "response.output_text.delta", "delta": "OK"},
+                    {"type": "response.completed", "response": envelope("OK")},
+                ),
+            )
+        return httpx.Response(200, json=envelope('{"ok":true}' if payload.get("text") else "OK"))
+
+    value = configs.ModelConfigInput(
+        **{**draft(configs).model_dump(), "protocol": "dashscope_responses"}
+    )
+    result = configs.probe(
+        value,
+        "admin-test",
+        client=httpx.Client(transport=httpx.MockTransport(reply)),
+        charge=lambda: None,
+    )
+    assert result["checks"] == ["text", "json", "stream", "tools"]
+
+
+@pytest.mark.parametrize("failure", ["thinking_stream", "broken_tools"])
+def test_responses_probe_rejects_runtime_incompatible_stream_or_function(configs, failure):
+    from tests.test_model_responses import envelope, events
+
+    def reply(request):
+        payload = json.loads(request.content)
+        if payload.get("stream"):
+            delta = "<think>private</think>OK" if failure == "thinking_stream" else "OK"
+            return httpx.Response(
+                200,
+                text=events(
+                    {"type": "response.output_text.delta", "delta": delta},
+                    {"type": "response.completed", "response": envelope("OK")},
+                ),
+            )
+        if payload.get("tools"):
+            return httpx.Response(200, json=envelope("Did not call required tool"))
+        return httpx.Response(200, json=envelope('{"ok":true}'))
+
+    value = configs.ModelConfigInput(
+        **{**draft(configs).model_dump(), "protocol": "openai_responses"}
+    )
+    with pytest.raises(DomainError):
+        configs.probe(
+            value,
+            "admin",
+            client=httpx.Client(transport=httpx.MockTransport(reply)),
+            charge=lambda: None,
+        )
+
+
+def test_image_search_profile_probe_requires_actual_tool_call(configs):
+    from tests.test_model_responses import envelope
+
+    def reply(request):
+        payload = json.loads(request.content)
+        if payload.get("tools"):
+            return httpx.Response(200, json=envelope("I guessed a color, but did not search"))
+        return httpx.Response(200, json=envelope('{"color":"red"}'))
+
+    value = configs.ModelConfigInput(
+        **{**draft(configs).model_dump(), "role": "vision", "protocol": "dashscope_image_search"}
+    )
+    with pytest.raises(DomainError):
+        configs.probe(
+            value,
+            "admin",
+            client=httpx.Client(transport=httpx.MockTransport(reply)),
+            charge=lambda: None,
+        )
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "http://models.example.com/v1",

@@ -38,10 +38,13 @@ services:
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_CONFIG_ENCRYPTION_KEY: ${MODEL_CONFIG_ENCRYPTION_KEY:-}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
+      CHAT_API_PROTOCOL: ${CHAT_API_PROTOCOL:-chat_completions}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       VISION_API_KEY: ${VISION_API_KEY:-}
       VISION_MODEL: ${VISION_MODEL:-qwen3.7-flash}
+      VISION_API_PROTOCOL: ${VISION_API_PROTOCOL:-chat_completions}
+      VISION_IMAGE_SEARCH_ENABLED: ${VISION_IMAGE_SEARCH_ENABLED:-false}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
@@ -113,10 +116,13 @@ services:
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_CONFIG_ENCRYPTION_KEY: ${MODEL_CONFIG_ENCRYPTION_KEY:-}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
+      CHAT_API_PROTOCOL: ${CHAT_API_PROTOCOL:-chat_completions}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       VISION_API_KEY: ${VISION_API_KEY:-}
       VISION_MODEL: ${VISION_MODEL:-qwen3.7-flash}
+      VISION_API_PROTOCOL: ${VISION_API_PROTOCOL:-chat_completions}
+      VISION_IMAGE_SEARCH_ENABLED: ${VISION_IMAGE_SEARCH_ENABLED:-false}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
@@ -179,10 +185,13 @@ services:
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-flash}
+      CHAT_API_PROTOCOL: ${CHAT_API_PROTOCOL:-chat_completions}
       VISION_PROVIDER: ${VISION_PROVIDER:-dashscope}
       VISION_BASE_URL: ${VISION_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       VISION_API_KEY: ${VISION_API_KEY:-}
       VISION_MODEL: ${VISION_MODEL:-qwen3.7-flash}
+      VISION_API_PROTOCOL: ${VISION_API_PROTOCOL:-chat_completions}
+      VISION_IMAGE_SEARCH_ENABLED: ${VISION_IMAGE_SEARCH_ENABLED:-false}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}

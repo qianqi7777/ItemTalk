@@ -55,10 +55,13 @@ class Settings(BaseSettings):
     model_api_key: SecretStr = SecretStr("")
     model_config_encryption_key: SecretStr = SecretStr("")
     chat_model: str = "qwen3.7-flash"
+    chat_api_protocol: Literal["chat_completions", "responses"] = "chat_completions"
     vision_provider: str = "dashscope"
     vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     vision_api_key: SecretStr = SecretStr("")
     vision_model: str = "qwen3.7-flash"
+    vision_api_protocol: Literal["chat_completions", "responses"] = "chat_completions"
+    vision_image_search_enabled: bool = False
     embedding_provider: str = "dashscope"
     embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_api_key: SecretStr = SecretStr("")

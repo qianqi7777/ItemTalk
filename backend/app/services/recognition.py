@@ -223,23 +223,46 @@ def recognize(
                 researchStatus="searching",
             )
             on_progress("finding_candidates", 35)
+            image_references = []
+            if gateway.config.vision_image_search_enabled:
+                from app.image_search import search_images
+
+                try:
+                    image_references = search_images(gateway, images, subject, fetcher=fetcher)
+                    analysis["imageSearchStatus"] = "found"
+                except DomainError as error:
+                    analysis["imageSearchStatus"] = "unavailable"
+                    if error.status in {429, 504}:
+                        raise
             rows, visited = [], set()
             domains = brand_domains(observation.brandHint, registered_domains)
             for query in search_queries(observation, (registered_domains or {}).keys()):
-                for row in search.search(
-                    query,
-                    timeout=8,
-                    max_attempts=1,
-                    subject=subject,
-                    include_domains=domains or None,
-                ):
+                try:
+                    found = search.search(
+                        query,
+                        timeout=8,
+                        max_attempts=1,
+                        subject=subject,
+                        include_domains=domains or None,
+                    )
+                except DomainError:
+                    if not image_references:
+                        raise
+                    break
+                for row in found:
                     if row["url"] not in visited:
                         rows.append(row)
                         visited.add(row["url"])
                 if len(rows) >= 5:
                     break
             rows.sort(key=lambda row: not official_url(row["url"], domains))
-            references = fetch_references(rows[:5], observation, domains, fetcher=fetcher)
+            try:
+                text_references = fetch_references(rows[:5], observation, domains, fetcher=fetcher)
+            except DomainError:
+                if not image_references:
+                    raise
+                text_references = []
+            references = image_references + text_references
             if not references:
                 analysis["researchStatus"] = "no_sources"
                 return {

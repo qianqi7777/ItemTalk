@@ -63,11 +63,13 @@ type Draft = {
 const emptyDraft: Draft = {
   name: '',
   baseUrl: '',
-  protocol: 'openai_chat',
+  protocol: 'openai_responses',
   model: '',
   apiKey: '',
 };
 const chatProtocols = [
+  { value: 'openai_responses', label: 'Responses 兼容' },
+  { value: 'dashscope_responses', label: '百炼 Responses（关闭思考）' },
   { value: 'openai_chat', label: 'Chat Completions 兼容' },
   { value: 'dashscope_chat', label: '百炼 Chat Completions（关闭思考）' },
 ];
@@ -111,7 +113,23 @@ export function ModelConfigs({
               label: 'Embeddings（保持服务器预设）',
             },
           ]
-        : chatProtocols;
+        : role === 'vision'
+          ? [
+              ...chatProtocols,
+              {
+                value: 'dashscope_image_search',
+                label: '百炼 Responses + 图搜图',
+              },
+            ]
+          : chatProtocols;
+  const probeCallCount =
+    role === 'chat'
+      ? ['openai_responses', 'dashscope_responses'].includes(draft.protocol)
+        ? 5
+        : 3
+      : draft.protocol === 'dashscope_image_search'
+        ? 2
+        : 1;
   const switchRole = (next: Role) => {
     if (busy) return;
     setRole(next);
@@ -126,7 +144,7 @@ export function ModelConfigs({
           ? 'dashscope_audio'
           : next === 'embedding'
             ? 'dashscope_embeddings'
-            : 'openai_chat'),
+            : 'openai_responses'),
     });
     setTested(null);
     setError('');
@@ -404,7 +422,7 @@ export function ModelConfigs({
           </label>
           <div className="control-footer">
             <p>
-              测试发送{role === 'chat' ? ' 3 ' : ' 1 '}
+              测试最多发送 {probeCallCount}{' '}
               次固定样例请求，会消耗少量供应商额度并计入网站调用额度。只切换当前用途。
             </p>
             <Space wrap>
