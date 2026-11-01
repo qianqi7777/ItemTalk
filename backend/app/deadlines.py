@@ -36,10 +36,21 @@ def remaining(maximum):
     return max(0.01, value)
 
 
-def bounded_call(function, *args, on_timeout=None, **kwargs):
-    """Bound blocking DNS/header work; at most four active calls, no unbounded queue."""
-    deadline = time.monotonic() + remaining(15)
-    while not _network_slots.acquire(timeout=min(0.1, remaining(15))):
+@contextmanager
+def time_limit(maximum):
+    """Narrow an existing deadline without losing its cancellation callback."""
+    parent = _scope.get()
+    deadline = time.monotonic() + remaining(maximum)
+    if parent:
+        deadline = min(deadline, parent[0])
+    with request_scope(deadline, parent[1] if parent else lambda: False):
+        yield
+
+
+def bounded_call(function, *args, on_timeout=None, maximum_wait=15, **kwargs):
+    """Bound blocking network work; at most four active calls, no unbounded queue."""
+    deadline = time.monotonic() + remaining(maximum_wait)
+    while not _network_slots.acquire(timeout=min(0.1, remaining(maximum_wait))):
         if time.monotonic() >= deadline:
             raise DomainError(504, "ANSWER_TIMEOUT", "网络查询已超时")
     context = copy_context()
@@ -47,7 +58,7 @@ def bounded_call(function, *args, on_timeout=None, **kwargs):
     future.add_done_callback(lambda _future: _network_slots.release())
     try:
         while True:
-            limit = min(remaining(15), deadline - time.monotonic())
+            limit = min(remaining(maximum_wait), deadline - time.monotonic())
             if limit <= 0:
                 raise DomainError(504, "ANSWER_TIMEOUT", "网络查询已超时")
             try:
