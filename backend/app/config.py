@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     stt_timeout_seconds: int = Field(default=60, ge=1, le=180)
     chat_timeout_seconds: int = Field(default=45, ge=1, le=180)
     vision_timeout_seconds: int = Field(default=60, ge=1, le=180)
+    image_search_timeout_seconds: int = Field(default=120, ge=1, le=120)
     embedding_timeout_seconds: int = Field(default=30, ge=1, le=180)
     search_timeout_seconds: int = Field(default=20, ge=1, le=120)
     search_max_results: int = Field(default=10, ge=1, le=20)

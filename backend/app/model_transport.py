@@ -1,6 +1,7 @@
 """Public HTTPS transport for administrator-entered model endpoints, including SSE."""
 
 import http.client
+import socket
 
 import httpx
 
@@ -14,6 +15,7 @@ class ModelResponseStream(httpx.SyncByteStream):
         self.connection = connection
         self.response = response
         self.timeout = timeout
+        self.closed = False
 
     def __iter__(self):
         size = 0
@@ -24,7 +26,12 @@ class ModelResponseStream(httpx.SyncByteStream):
                 )
                 if sock:
                     sock.settimeout(remaining(self.timeout))
-                chunk = bounded_call(self.response.read1, 65536, on_timeout=self.close)
+                chunk = bounded_call(
+                    self.response.read1,
+                    65536,
+                    on_timeout=self.close,
+                    maximum_wait=self.timeout,
+                )
                 if not chunk:
                     return
                 size += len(chunk)
@@ -37,6 +44,18 @@ class ModelResponseStream(httpx.SyncByteStream):
             self.close()
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        # Interrupt a blocked reader before HTTPResponse.close waits for its buffer lock.
+        sock = getattr(self.connection, "sock", None) or getattr(
+            getattr(getattr(self.response, "fp", None), "raw", None), "_sock", None
+        )
+        if sock:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         self.response.close()
         self.connection.close()
 

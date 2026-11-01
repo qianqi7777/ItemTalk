@@ -157,6 +157,36 @@ def test_image_search_profile_probe_requires_actual_tool_call(configs):
         )
 
 
+def test_image_search_profile_probe_uses_public_sample_and_streamed_tool(configs):
+    from app.model_image_search import PROBE_IMAGE
+    from tests.test_model_responses import envelope
+    from tests.test_native_search_stream import event, tool_event
+
+    calls, charges = [], []
+
+    def reply(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        if payload.get("tools"):
+            assert payload["input"][0]["content"][1]["image_url"] == PROBE_IMAGE
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=event(tool_event())
+            )
+        return httpx.Response(200, json=envelope('{"color":"red"}'))
+
+    value = configs.ModelConfigInput(
+        **{**draft(configs).model_dump(), "role": "vision", "protocol": "dashscope_image_search"}
+    )
+    result = configs.probe(
+        value,
+        "admin",
+        client=httpx.Client(transport=httpx.MockTransport(reply)),
+        charge=lambda: charges.append(1),
+    )
+    assert result["checks"] == ["image", "json", "image_search"]
+    assert len(calls) == len(charges) == 2
+
+
 @pytest.mark.parametrize(
     "url",
     [

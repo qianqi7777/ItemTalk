@@ -1,10 +1,9 @@
 """Private observe -> retrieve real references -> visually compare pipeline."""
 
-import time
 from uuid import uuid4
 
 from app.adapters import SearchGateway
-from app.deadlines import request_scope
+from app.deadlines import time_limit
 from app.errors import DomainError
 from app.identification import labeled_value, normalized
 from app.recognition_models import Comparison, Observation, PhotoRequest
@@ -212,7 +211,7 @@ def recognize(
     observation = None
     analysis = dict(previous)
     try:
-        with request_scope(time.monotonic() + 140):
+        with time_limit(180 if gateway.config.vision_image_search_enabled else 140):
             on_progress("observing", 15)
             observation = observe(gateway, images, notes, prior, subject)
             analysis.update(
@@ -232,11 +231,15 @@ def recognize(
                     analysis["imageSearchStatus"] = "found"
                 except DomainError as error:
                     analysis["imageSearchStatus"] = "unavailable"
-                    if error.status in {429, 504}:
+                    if error.status in {409, 429, 504}:
                         raise
             rows, visited = [], set()
             domains = brand_domains(observation.brandHint, registered_domains)
-            for query in search_queries(observation, (registered_domains or {}).keys()):
+            for query in (
+                []
+                if image_references
+                else search_queries(observation, (registered_domains or {}).keys())
+            ):
                 try:
                     found = search.search(
                         query,
@@ -305,7 +308,7 @@ def recognize(
                 ),
             }
     except DomainError as error:
-        if observation is None:
+        if observation is None or error.status == 409:
             raise
         analysis["researchStatus"] = "limited" if error.status in {429, 504} else "unavailable"
         return {

@@ -7,6 +7,7 @@ import pytest
 
 from app.errors import DomainError
 from tests.test_model_responses import envelope, make_gateway
+from tests.test_native_search_stream import event, tool_event
 from tests.test_visual_recognition import picture
 
 
@@ -17,21 +18,13 @@ def test_search_results_become_bounded_unverified_references(monkeypatch):
         payload = json.loads(request.content)
         assert request.url.path.endswith("/responses")
         assert payload["tools"] == [{"type": "image_search"}]
-        assert payload["tool_choice"] == "required"
+        assert payload["tool_choice"] == "auto"
         assert payload["input"][-1]["content"][-1]["type"] == "input_image"
         rows = [{"title": "Acme Phone 16", "url": "https://images.example/16.jpg"}]
         return httpx.Response(
             200,
-            json=envelope(
-                "possible product",
-                output=[
-                    {
-                        "type": "image_search_call",
-                        "status": "completed",
-                        "output": json.dumps(rows),
-                    },
-                ],
-            ),
+            headers={"content-type": "text/event-stream"},
+            content=event(tool_event(rows)),
         )
 
     def fetcher(url, **kwargs):
@@ -57,10 +50,12 @@ def test_search_missing_or_invalid_output_cannot_create_candidates(monkeypatch, 
         monkeypatch,
         lambda request: httpx.Response(
             200,
-            json=envelope(
-                output=[
-                    {"type": "image_search_call", "status": "completed", "output": output},
-                ]
+            headers={"content-type": "text/event-stream"},
+            content=event(
+                {
+                    "type": "response.output_item.done",
+                    "item": {"type": "image_search_call", "status": "completed", "output": output},
+                }
             ),
         ),
     )
@@ -93,17 +88,8 @@ def test_recognition_uses_image_search_when_text_search_is_unavailable(monkeypat
         if payload.get("tools"):
             return httpx.Response(
                 200,
-                json=envelope(
-                    output=[
-                        {
-                            "type": "image_search_call",
-                            "status": "completed",
-                            "output": json.dumps(
-                                [{"title": "Acme Phone 16", "url": "https://images.example/16.jpg"}]
-                            ),
-                        }
-                    ]
-                ),
+                headers={"content-type": "text/event-stream"},
+                content=event(tool_event()),
             )
         user_content = payload["input"][-1]["content"][0]["text"]
         context = json.loads(user_content)
@@ -131,9 +117,7 @@ def test_recognition_uses_image_search_when_text_search_is_unavailable(monkeypat
 
     class Search:
         def search(self, *args, **kwargs):
-            if text_mode == "download_timeout":
-                return [{"url": "https://pages.example/product", "title": "product"}]
-            raise DomainError(503, "UPSTREAM_SEARCH_ERROR", "search unavailable")
+            pytest.fail("native image references must proceed directly to visual comparison")
 
     def fetcher(url, **kwargs):
         if url.startswith("https://pages.example/"):
