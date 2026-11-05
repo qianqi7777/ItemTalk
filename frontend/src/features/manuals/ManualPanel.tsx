@@ -11,7 +11,72 @@ import { ApiError, api, newKey, post } from '../../services/api';
 import { usePolling } from '../../hooks/usePolling';
 import { MessageContent } from '../../components/MessageContent';
 import { CitationCard } from '../../components/CitationCard';
-import type { Manual, ManualSection, ProductInstance } from '../../types/api';
+import type {
+  Manual,
+  ManualSection,
+  ProductInstance,
+  SupplementalDocument,
+} from '../../types/api';
+
+function SupplementalDocuments({ product }: { product: ProductInstance }) {
+  const [items, setItems] = useState<SupplementalDocument[]>();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    void api<{ items: SupplementalDocument[] }>(
+      `/products/${encodeURIComponent(product.productModelId)}/supplemental-documents?instanceId=${encodeURIComponent(product.id)}`,
+    )
+      .then((value) => {
+        if (active) {
+          setItems(value.items);
+          setError('');
+        }
+      })
+      .catch((error) => {
+        if (active)
+          setError(error instanceof Error ? error.message : '补充资料加载失败');
+      });
+    return () => {
+      active = false;
+    };
+  }, [product.id, product.productModelId, product.supplementalDocumentCount]);
+  return (
+    <section className="supplemental-documents" aria-label="第三方补充资料">
+      <h3>第三方补充资料</h3>
+      <p>第三方资料 · 非官方核验</p>
+      <p>仅供补充参考，不作为官方说明书章节或操作引导的核验证据。</p>
+      {error ? (
+        <Alert title={error} type="warning" showIcon />
+      ) : !items ? (
+        <Spin aria-label="加载补充资料" />
+      ) : !items.length ? (
+        <p>当前没有可用的第三方补充资料。</p>
+      ) : (
+        <div className="citations">
+          {items.map((item) => (
+            <article
+              className="citation web-source"
+              data-kind="third_party"
+              key={item.id}
+            >
+              <a
+                href={/^https:\/\//i.test(item.url) ? item.url : undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {item.title}
+              </a>
+              <small>
+                {item.pageCount} 页 · 抓取于{' '}
+                {new Date(item.fetchedAt).toLocaleString('zh-CN')}
+              </small>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 export function ManualPanel({ product }: { product: ProductInstance }) {
   const [open, setOpen] = useState(false);
@@ -159,6 +224,10 @@ export function ManualPanel({ product }: { product: ProductInstance }) {
       {!open && <p className="tool-description">查阅章节与核验来源</p>}
       {open && (
         <div className="manual-content">
+          {((product.supplementalDocumentCount || 0) > 0 ||
+            product.knowledgeStatus === 'supplemental_ready') && (
+            <SupplementalDocuments key={product.id} product={product} />
+          )}
           <div className="inline-actions">
             <Button
               disabled={loading}

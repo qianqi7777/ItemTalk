@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
-import { api } from '../services/api';
+import { api, post } from '../services/api';
 import type { ProductInstance } from '../types/api';
 import { HomePage } from './HomePage';
 
@@ -174,3 +174,70 @@ test('未切换时正常应用产品进度及任务错误', async () => {
   await screen.findByText('当前任务失败', {}, { timeout: 3500 });
   expect(screen.getByText('资料构建失败')).toBeVisible();
 });
+
+test.each(['supplemental_ready', 'failed', 'partial'])(
+  '仅用户确认的 %s 产品可直接重试构建，保留当前产品',
+  async (knowledgeStatus) => {
+    const supplemental = {
+      ...first,
+      identityStatus: 'user_confirmed',
+      verificationStatus: 'pending',
+      knowledgeStatus,
+    };
+    vi.mocked(api).mockImplementation(async (path) => {
+      if (path === '/me/products') return { items: [supplemental] };
+      if (path === '/me/products/first') return supplemental;
+      if (path === '/jobs/job-a')
+        return {
+          id: 'job-a',
+          status: 'succeeded',
+          progress: {},
+          lastError: null,
+        };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.mocked(post).mockResolvedValue({ id: 'retry' });
+    render(<HomePage />);
+    await userEvent.click(
+      await screen.findByRole('button', { name: '重试资料构建' }),
+    );
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        '/products/model-first/knowledge-jobs',
+        {},
+        'test-key',
+        'job-a',
+      ),
+    );
+    expect(
+      screen.getByRole('heading', { name: 'Device A', level: 2 }),
+    ).toBeVisible();
+    expect(screen.queryByRole('heading', { name: '认识你的产品' })).toBeNull();
+  },
+);
+
+test('资料轮询进入第三方查找阶段后继续更新至补充资料就绪', async () => {
+  let reads = 0;
+  const pending = { ...first, knowledgeJobId: null };
+  vi.mocked(api).mockImplementation(async (path) => {
+    if (path === '/me/products') return { items: [pending] };
+    if (path === '/me/products/first')
+      return {
+        ...pending,
+        knowledgeStatus:
+          ++reads === 1 ? 'researching_supplemental' : 'supplemental_ready',
+      };
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  render(<HomePage />);
+  expect(
+    await screen.findByText('查找第三方说明书', {}, { timeout: 3000 }),
+  ).toBeVisible();
+  expect(
+    await screen.findByText(
+      '第三方资料可用 · 非官方核验',
+      {},
+      { timeout: 3000 },
+    ),
+  ).toBeVisible();
+}, 7000);

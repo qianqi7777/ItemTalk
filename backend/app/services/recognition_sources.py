@@ -184,11 +184,12 @@ def page_references(url, title, raw, domains=()):
     return refs
 
 
-def fetch_references(rows, observation, domains=(), *, fetcher=None):
+def fetch_references(rows, observation, domains=(), *, fetcher=None, on_source_rate_limited=None):
     from app.fetch import fetch_public
 
     fetcher = fetcher or fetch_public
     refs, visited = [], set()
+    source_limited = False
     for row in rows[:5]:
         url = row.get("url", "")
         if not safe_reference_url(url) or urldefrag(url)[0] in visited:
@@ -200,6 +201,11 @@ def fetch_references(rows, observation, domains=(), *, fetcher=None):
                 continue
             refs.extend(page_references(final, row.get("title", "产品参考"), data, domains))
         except DomainError as error:
+            if error.code == "SOURCE_RATE_LIMITED":
+                source_limited = True
+                if on_source_rate_limited:
+                    on_source_rate_limited()
+                break
             if error.status in {429, 504}:
                 raise
 
@@ -212,7 +218,7 @@ def fetch_references(rows, observation, domains=(), *, fetcher=None):
 
     refs.sort(key=priority)
     selected = refs[:8]
-    for row in selected[:3]:
+    for row in [] if source_limited else selected[:3]:
         if not row.get("imageUrl") or not any(
             exact_image_title(row["title"], h.brandName, h.modelCode)
             for h in observation.hypotheses
@@ -226,6 +232,10 @@ def fetch_references(rows, observation, domains=(), *, fetcher=None):
             )
             row["imageData"] = thumbnail(data, mime)
         except DomainError as error:
+            if error.code == "SOURCE_RATE_LIMITED":
+                if on_source_rate_limited:
+                    on_source_rate_limited()
+                break
             if error.status in {429, 504}:
                 raise
     return [{k: v for k, v in row.items() if k != "imageUrl"} for row in selected]

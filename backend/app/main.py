@@ -606,7 +606,9 @@ def build_knowledge(
         model = one(connection, "SELECT * FROM product_models WHERE id=:id", id=model_id)
         if not model:
             missing()
-        if model["identity_status"] != "verified":
+        if model["identity_status"] != "verified" and not (
+            instance and model["identity_status"] == "user_confirmed"
+        ):
             raise DomainError(409, "PRODUCT_MODEL_NOT_VERIFIED", "型号尚未通过来源核验")
         if retry:
             products.accessible_job(connection, retry, current["id"], current["is_admin"])
@@ -768,6 +770,21 @@ def get_manual(
     response.headers["Vary"] = "Cookie"
     with transaction() as connection:
         return manuals.get_manual(connection, model_id, current["id"], instanceId)
+
+
+@app.get("/api/v1/products/{model_id}/supplemental-documents")
+def get_supplemental_documents(
+    model_id: UUID, instanceId: UUID, response: Response, current=Depends(user)
+):
+    from app.services.supplemental_index import documents
+
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
+    with transaction() as connection:
+        instance = products.owned(connection, "instances", instanceId, current["id"])
+        if instance["product_model_id"] != model_id:
+            missing()
+        return {"items": documents(connection, model_id)}
 
 
 @app.get("/api/v1/manuals/{manual_id}/sections/{section_id}")

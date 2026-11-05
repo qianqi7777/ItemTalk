@@ -139,3 +139,39 @@ def test_ocr_rejects_truncation_unreadable_or_invalid_output(monkeypatch, kwargs
 def test_blank_page_transcription_is_a_valid_completed_result(monkeypatch):
     result, _, _ = transcribe(monkeypatch, text="")
     assert result == ""
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_literal_document_ocr_has_its_own_budget_without_mutating_role_config(monkeypatch, fails):
+    from app.document_ocr import transcribe_page
+
+    timeouts = []
+
+    def respond(request):
+        timeouts.append(request.extensions["timeout"]["read"])
+        if fails:
+            raise httpx.ConnectError("synthetic")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"text":"literal manual","unreadable":false}'},
+                    }
+                ]
+            },
+        )
+
+    config = Settings(model_provider="dashscope", vision_api_key="test", vision_timeout_seconds=60)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        gateway = ModelGateway(client, configuration=config)
+        monkeypatch.setattr(gateway, "budget", lambda _: None)
+        if fails:
+            with pytest.raises(DomainError):
+                transcribe_page(gateway, b"rendered", 1, "public-document")
+        else:
+            assert transcribe_page(gateway, b"rendered", 1, "public-document") == "literal manual"
+        assert gateway.config is config
+        assert config.vision_timeout_seconds == 60
+    assert timeouts == [180]

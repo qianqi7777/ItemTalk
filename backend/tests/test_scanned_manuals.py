@@ -50,7 +50,7 @@ def setup_manual(client, monkeypatch, data, responder):
     monkeypatch.setattr(
         SearchGateway,
         "search",
-        lambda *_: [{"url": "https://brand.example/manual.pdf", "title": "Manual"}],
+        lambda *_args, **_kwargs: [{"url": "https://brand.example/manual.pdf", "title": "Manual"}],
     )
     monkeypatch.setattr(knowledge, "fetch_public", lambda url: (url, "application/pdf", data))
     monkeypatch.setattr(ModelGateway, "request", responder)

@@ -67,6 +67,7 @@ export interface ProductInstance {
   verificationStatus: string;
   knowledgeJobId: string | null;
   knowledgeStatus: string;
+  supplementalDocumentCount?: number;
 }
 export interface Job {
   id: string;
@@ -94,6 +95,7 @@ export interface WebSource {
   fetchedAt: string;
   pageStart: number | null;
   pageEnd: number | null;
+  availabilityStatus?: 'available' | 'withdrawn';
 }
 export interface WebLookup {
   status: string;
@@ -101,7 +103,19 @@ export interface WebLookup {
   searchedAt: string;
   queryKey: string;
   cached: boolean;
+  lookupMode?: 'supplemental_index';
   conflict?: { title: string; url: string };
+}
+export interface SupplementalDocument {
+  id: string;
+  title: string;
+  url: string;
+  sourceKind: 'third_party';
+  fetchedAt: string;
+  pageCount: number;
+  chunkCount: number;
+  matchStatus: 'exact';
+  availabilityStatus: 'available';
 }
 export interface Message {
   id: string;

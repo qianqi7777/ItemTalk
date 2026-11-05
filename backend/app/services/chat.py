@@ -26,6 +26,8 @@ def conversation_view(row):
 
 
 def message_view(connection, row):
+    from app.services.supplemental_index import availability
+
     citations = many(
         connection,
         (
@@ -77,9 +79,12 @@ def message_view(connection, row):
             {
                 key: value
                 for key, value in source.items()
-                if key not in {"excerpt", "linkedFrom", "linkedUrl"}
+                if key not in {"excerpt", "linkedFrom", "linkedUrl", "_supplemental"}
             }
-            for source in (row.get("web_lookup") or {}).get("sources", [])
+            for source in (
+                availability(connection, source)
+                for source in (row.get("web_lookup") or {}).get("sources", [])
+            )
         ],
         "answerBasis": (
             row.get("answer_basis") or ("verified" if metadata else "insufficient")
@@ -646,6 +651,9 @@ def _complete_run(run, on_token=None, on_status=None):
             )
             if current["status"] != "running":
                 return run_view(connection, current)
+            from app.services.supplemental_index import validate_lookup
+
+            validate_lookup(connection, instance["product_model_id"], web_lookup)
             citations = live_citations(
                 connection, instance["product_model_id"], chunks if citations else [], citations
             )

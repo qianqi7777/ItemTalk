@@ -45,7 +45,17 @@ def transcribe_page(gateway, image, page_no, subject):
     }
     if gateway.config.vision_provider == "dashscope":
         payload["enable_thinking"] = False
-    result = gateway.request("vision", "/chat/completions", payload)
+    # Full-page transcription can take longer than identifying a photographed
+    # object. Change only this gateway's request budget, never shared settings or
+    # the persisted role configuration; the enclosing document deadline still wins.
+    configuration = gateway.config
+    try:
+        gateway.config = configuration.model_copy(
+            update={"vision_timeout_seconds": configuration.document_ocr_timeout_seconds}
+        )
+        result = gateway.request("vision", "/chat/completions", payload)
+    finally:
+        gateway.config = configuration
     try:
         choice = result["choices"][0]
         if choice.get("finish_reason") not in {None, "stop"}:

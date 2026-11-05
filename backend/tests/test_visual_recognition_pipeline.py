@@ -2,8 +2,10 @@
 
 import importlib
 import json
+from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from app.adapters import ModelGateway
 from app.config import Settings
@@ -214,6 +216,74 @@ def test_exhausted_search_budget_preserves_observation_and_explains_scope(monkey
     assert value["analysis"]["researchStatus"] == "limited"
     assert "额度" in value["clarification"]
     assert value["analysis"]["observation"]["features"]
+
+
+@pytest.mark.parametrize("keep_first", [False, True])
+@pytest.mark.parametrize("image_search", [False, True])
+def test_source_throttle_is_explicit_and_keeps_already_supported_candidates(
+    monkeypatch, keep_first, image_search
+):
+    service = importlib.import_module("app.services.recognition")
+    models = importlib.import_module("app.recognition_models")
+    first = "https://apple.com/first"
+    limited = "https://apple.com/limited"
+    later = "https://apple.com/later"
+    fetched = []
+    monkeypatch.setattr(service, "observe", lambda *_a: models.Observation(**observation()))
+
+    def compare(_gateway, _images, _observation, references, *_args):
+        return models.Comparison(
+            candidates=[
+                matching(
+                    brandName="Apple",
+                    modelCode="iPhone 16",
+                    sourceIds=[references[0]["id"]],
+                )
+            ]
+        )
+
+    monkeypatch.setattr(service, "compare", compare)
+
+    class Search:
+        def search(self, *_args, **_kwargs):
+            return [
+                {"url": url, "title": "Apple iPhone 16"}
+                for url in ([first] if keep_first else []) + [limited, later]
+            ]
+
+    if image_search:
+        monkeypatch.setattr("app.image_search.native_search", lambda *_a: Search().search())
+
+    def fetch(url, **_kwargs):
+        fetched.append(url)
+        if url == limited:
+            raise DomainError(503, "SOURCE_RATE_LIMITED", "资料网站暂时限制访问")
+        if image_search:
+            return url, "image/jpeg", picture()
+        return url, "text/html", b"<h1>Apple iPhone 16</h1><p>Apple iPhone 16 details</p>"
+
+    value = service.recognize(
+        SimpleNamespace(
+            config=Settings(model_provider="dashscope", vision_image_search_enabled=image_search),
+            managed_roles=set(),
+        ),
+        [(picture(), "image/jpeg")],
+        "",
+        {},
+        "user",
+        search=Search(),
+        fetcher=fetch,
+    )
+
+    assert fetched == ([first] if keep_first else []) + [limited]
+    assert value["analysis"]["researchStatus"] == "source_rate_limited"
+    if image_search:
+        assert value["analysis"]["imageSearchStatus"] == "source_rate_limited"
+    assert "资料网站暂时限制访问" in value["clarification"]
+    assert "额度" not in value["clarification"]
+    assert value["candidates"][0]["evidenceLevel"] == (
+        "reference_supported" if keep_first else "visual_guess"
+    )
 
 
 def test_two_visual_passes_use_downloaded_sources_and_all_user_photos(monkeypatch):

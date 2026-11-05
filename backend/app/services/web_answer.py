@@ -42,7 +42,14 @@ def answer_from_web(run, instance, question, gateway, cancelled, on_status=None)
     cached = next(
         (r["web_lookup"] for r in previous if cache_valid(r["web_lookup"], key, domains)), None
     )
-    lookup = research(
+    from app.services.supplemental_index import lookup as indexed_lookup
+
+    lookup = (
+        indexed_lookup(model, question, gateway, run["user_id"])
+        if not run.get("force_web_search") and not requires_evidence(question)
+        else None
+    )
+    lookup = lookup or research(
         model,
         question,
         user=run["user_id"],

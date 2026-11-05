@@ -169,6 +169,8 @@ def _excerpt(text, keywords):
 
 def cache_valid(cached, query_key, domains):
     try:
+        if cached.get("lookupMode") == "supplemental_index":
+            return False  # Always revalidate the index; never revive withdrawn material.
         age = (datetime.now(UTC) - datetime.fromisoformat(cached["searchedAt"])).total_seconds()
         if cached["queryKey"] != query_key or not 0 <= age < (
             21600 if cached["status"] == "found" else 900
@@ -304,7 +306,7 @@ def research(
                         if (
                             error.status == 409
                             or error.status == 429
-                            or error.code == "ANSWER_TIMEOUT"
+                            or error.code in {"ANSWER_TIMEOUT", "SOURCE_RATE_LIMITED"}
                         ):
                             raise
                         result["reason"] = "unreadable"
@@ -356,14 +358,25 @@ def research(
             if error.status == 409:
                 raise
             result["reason"] = (
-                "quota"
+                "source_rate_limited"
+                if error.code == "SOURCE_RATE_LIMITED"
+                else "quota"
                 if error.status == 429
                 else "timeout"
                 if error.code == "ANSWER_TIMEOUT"
                 else "search_unavailable"
             )
     if result["sources"]:
-        result.update(status="found", reason=None)
+        result.update(
+            status="found",
+            reason="source_rate_limited" if result["reason"] == "source_rate_limited" else None,
+        )
     elif conflict:
-        result.update(status="identity_conflict", reason="identity_conflict", conflict=conflict)
+        result.update(
+            status="identity_conflict",
+            reason="source_rate_limited"
+            if result["reason"] == "source_rate_limited"
+            else "identity_conflict",
+            conflict=conflict,
+        )
     return result

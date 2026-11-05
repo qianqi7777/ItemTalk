@@ -31,6 +31,44 @@ const product: ProductInstance = {
   knowledgeStatus: 'ready',
 };
 
+test('补充索引历史回答显示第三方资料库标识，仍可提问与重新联网', () => {
+  render(
+    <ChatPanel
+      product={product}
+      initialConversation={{
+        id: 'indexed-chat',
+        nextCursor: null,
+        items: [
+          { id: 'q', role: 'user', content: '如何查看电量？', citations: [] },
+          {
+            id: 'a',
+            role: 'assistant',
+            content: '查看设备指示灯。',
+            answerBasis: 'web',
+            citations: [],
+            webLookup: {
+              status: 'succeeded',
+              reason: 'source_rate_limited',
+              searchedAt: '2026-11-05T00:00:00Z',
+              queryKey: 'battery',
+              cached: false,
+              lookupMode: 'supplemental_index',
+            },
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByText('来自第三方补充资料库 · 非官方核验')).toBeVisible();
+  expect(
+    screen.getByText('资料网站暂时限制访问，已停止本轮读取，请稍后重试。'),
+  ).toBeVisible();
+  expect(screen.queryByText('本次联网请求达到可用额度。')).toBeNull();
+  expect(screen.queryByText('基于联网资料')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '重新联网搜索' })).toBeEnabled();
+  expect(screen.getByLabelText('提问内容')).toBeEnabled();
+});
+
 test('无官方资料的产品仍可提问，历史中的通用建议保持明确标识', () => {
   render(
     <ChatPanel

@@ -144,6 +144,7 @@ def persist_document(
     *,
     official_parent_version_id=None,
     official_link_url=None,
+    source_type="official",
 ):
     """未核验内容仅落在 document_pages；禁止当作知识片段提前发布。"""
     existing = one(
@@ -196,13 +197,14 @@ def persist_document(
         (
             "INSERT INTO "
             "sources(url,normalized_url,domain,source_type,is_official,verification_status,last_verified_at)"
-            " VALUES (:url,:url,:domain,'official',:trusted,:status,CASE WHEN "
+            " VALUES (:url,:url,:domain,:source_type,:trusted,:status,CASE WHEN "
             ":trusted THEN now() ELSE NULL END) ON CONFLICT(normalized_url) DO "
             "UPDATE SET normalized_url=EXCLUDED.normalized_url RETURNING *"
         ),
         url=url,
         domain=urlsplit(url).hostname,
         trusted=trusted,
+        source_type=source_type,
         status=status,
     )
     document = one(
@@ -515,6 +517,9 @@ def research(job):
             execute_subtask(job, "embed", payload, embed_task)
             published += 1
         except DomainError as error:
+            if error.code == "SOURCE_RATE_LIMITED":
+                problems.add(error.message)
+                break  # Do not fetch another link that may redirect to this host.
             if error.code not in {
                 "UPSTREAM_SEARCH_ERROR",
                 "SOURCE_UNVERIFIED",
@@ -535,7 +540,21 @@ def research(job):
         problems.add("品牌官方来源尚未核验")
     if not results:
         problems.add("暂未发现可安全读取的官方资料链接")
-    summary = "；".join(sorted(problems)) or "没有找到满足型号、地区和官方来源要求的资料"
+    supplemental = 0
+    if not published and not mock:
+        from app.services.supplemental_research import build
+
+        try:
+            supplemental = build(job, model)
+        except DomainError as error:
+            if error.code != "SOURCE_RATE_LIMITED":
+                raise
+            problems.add("第三方资料网站暂时限制访问，请稍后重试")
+    summary = (
+        "已建立第三方补充索引，未经官方核验；官方资料仍待补充"
+        if supplemental
+        else "；".join(sorted(problems)) or "没有找到满足型号、地区和官方来源要求的资料"
+    )
     with transaction() as connection:
         finish(
             connection,

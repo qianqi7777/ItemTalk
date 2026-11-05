@@ -5,9 +5,11 @@ const knowledgeLabels: Record<string, string> = {
   not_requested: '尚未建立资料',
   queued: '任务已排队',
   researching: '查找官方资料',
+  researching_supplemental: '查找第三方说明书',
   parsing: '解析与核验资料',
   embedding: '建立检索索引',
   ready: '资料已就绪',
+  supplemental_ready: '第三方资料可用 · 非官方核验',
   partial: '资料仍待补充',
   failed: '资料构建失败',
 };
@@ -39,9 +41,15 @@ export function KnowledgeProgress({
           )}
         </p>
       )}
-      {!['ready', 'partial', 'failed', 'not_requested'].includes(
-        product.knowledgeStatus,
-      ) && <Progress percent={job?.progress.percent || 0} status="active" />}
+      {![
+        'ready',
+        'supplemental_ready',
+        'partial',
+        'failed',
+        'not_requested',
+      ].includes(product.knowledgeStatus) && (
+        <Progress percent={job?.progress.percent || 0} status="active" />
+      )}
       {job?.lastError &&
         (compact ? (
           <details className="knowledge-error">
