@@ -472,37 +472,40 @@ async function fits(page: Page) {
 }
 
 async function withinTaskViewport(page: Page, selector: string) {
-  const target = await page.locator(selector).boundingBox();
-  const nav = await page
-    .getByRole('navigation', { name: '移动页面导航' })
-    .boundingBox();
-  const topbar = await page.locator('.topbar').boundingBox();
-  expect(target).not.toBeNull();
-  expect(target!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height);
-  expect(target!.y + target!.height).toBeLessThanOrEqual(nav!.y);
-  expect(target!.x).toBeGreaterThanOrEqual(0);
-  expect(target!.x + target!.width).toBeLessThanOrEqual(
-    page.viewportSize()!.width,
-  );
-  expect(target!.height).toBeGreaterThanOrEqual(
-    selector === '.messages' ? 24 : 36,
-  );
-  expect(
-    await page.locator(selector).evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(
-        rect.x + rect.width / 2,
-        rect.bottom - 2,
-      );
-      return hit && element.contains(hit)
-        ? true
-        : {
-            hit: hit?.outerHTML.slice(0, 200),
-            rect: rect.toJSON(),
-            parent: element.parentElement?.getBoundingClientRect().toJSON(),
-          };
-    }),
-  ).toBe(true);
+  // visualViewport resize listeners and textarea layout settle after the browser resize.
+  await expect(async () => {
+    const target = await page.locator(selector).boundingBox();
+    const nav = await page
+      .getByRole('navigation', { name: '移动页面导航' })
+      .boundingBox();
+    const topbar = await page.locator('.topbar').boundingBox();
+    expect(target).not.toBeNull();
+    expect(target!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height);
+    expect(target!.y + target!.height).toBeLessThanOrEqual(nav!.y);
+    expect(target!.x).toBeGreaterThanOrEqual(0);
+    expect(target!.x + target!.width).toBeLessThanOrEqual(
+      page.viewportSize()!.width,
+    );
+    expect(target!.height).toBeGreaterThanOrEqual(
+      selector === '.messages' ? 24 : 36,
+    );
+    expect(
+      await page.locator(selector).evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.bottom - 2,
+        );
+        return hit && element.contains(hit)
+          ? true
+          : {
+              hit: hit?.outerHTML.slice(0, 200),
+              rect: rect.toJSON(),
+              parent: element.parentElement?.getBoundingClientRect().toJSON(),
+            };
+      }),
+    ).toBe(true);
+  }).toPass({ timeout: 5000 });
 }
 
 for (const viewport of [
