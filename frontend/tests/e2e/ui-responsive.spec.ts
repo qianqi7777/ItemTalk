@@ -1,4 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+
+const chatPhoto = readFileSync(
+  new URL('../fixtures/recognition-back.png', import.meta.url),
+);
 
 // 固定合成响应只验证真实React布局与交互，不代表生产服务或供应商验收。
 const user = {
@@ -54,16 +59,40 @@ async function fixture(
     product?: boolean;
     singlePoint?: boolean;
     speech?: boolean;
+    failed?: boolean;
   } = {},
 ) {
   let authenticated = options.authenticated ?? true;
   const admin = options.admin ?? true;
+  let photoCount = 0;
+  const device = options.failed
+    ? { ...product, knowledgeStatus: 'failed', knowledgeJobId: 'failed-job' }
+    : product;
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace(/^.*\/api\/v1/, '');
     const method = request.method();
     const reply = (body: unknown, status = 200) =>
       route.fulfill({ status, json: body });
+    if (path === '/assets/presign')
+      return reply(
+        {
+          assetId: `chat-photo-${++photoCount}`,
+          uploadUrl: `${new URL(request.url()).origin}/api/v1/assets/chat-photo-${photoCount}/content`,
+        },
+        201,
+      );
+    if (path.endsWith('/content') && method === 'PUT')
+      return route.fulfill({ status: 204 });
+    if (path.startsWith('/assets/') && path.endsWith('/confirm'))
+      return reply({
+        id: path.split('/')[2],
+        mimeType: 'image/png',
+        sizeBytes: chatPhoto.length,
+        status: 'available',
+        kind: 'product_photo',
+        readUrl: 'data:image/png;base64,' + chatPhoto.toString('base64'),
+      });
     if (path === '/auth/login') {
       authenticated = true;
       return route.fulfill({ status: 204 });
@@ -81,7 +110,15 @@ async function fixture(
         adminConsole: admin,
       });
     if (path === '/me/products')
-      return reply({ items: options.product ? [product] : [] });
+      return reply({ items: options.product ? [device] : [] });
+    if (path === `/me/products/${product.id}`) return reply(device);
+    if (path === '/jobs/failed-job')
+      return reply({
+        id: 'failed-job',
+        status: 'failed',
+        progress: { percent: 0 },
+        lastError: '未找到适用资料，请重新查找或补充准确型号。',
+      });
     if (path.startsWith('/admin/') && !admin)
       return reply({ code: 'FORBIDDEN', message: '需要管理员权限' }, 403);
     if (path === '/admin/model-configs')
@@ -256,12 +293,262 @@ async function fixture(
   });
 }
 
+test('键盘仅缩小visualViewport时仍可发送，收起后恢复', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 667 });
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.defineProperties(viewport, {
+      height: { value: 667, writable: true },
+      offsetTop: { value: 0, writable: true },
+    });
+    Object.defineProperty(window, 'visualViewport', {
+      value: viewport,
+      configurable: true,
+    });
+  });
+  await fixture(page, { product: true, admin: false });
+  await page.goto('/');
+  await page.getByLabel('提问内容').fill('键盘遮挡回归');
+  await page.evaluate(() => {
+    Object.defineProperty(window.visualViewport!, 'height', {
+      value: 360,
+      writable: true,
+    });
+    window.visualViewport!.dispatchEvent(new Event('resize'));
+  });
+  await withinTaskViewport(page, '.chat-composer');
+  await withinTaskViewport(page, '.messages');
+  await page.evaluate(() => {
+    Object.defineProperty(window.visualViewport!, 'offsetTop', {
+      value: 250,
+      writable: true,
+    });
+    window.visualViewport!.dispatchEvent(new Event('scroll'));
+  });
+  await withinTaskViewport(page, '.chat-composer');
+  await withinTaskViewport(page, '.messages');
+  expect(
+    (await page.locator('.messages').boundingBox())!.y,
+  ).toBeGreaterThanOrEqual(250);
+  await page.screenshot({
+    path: 'test-results/mobile-task/keyboard-visual-viewport.png',
+    animations: 'disabled',
+  });
+  await page.evaluate(() => {
+    Object.defineProperty(window.visualViewport!, 'height', {
+      value: 667,
+      writable: true,
+    });
+    Object.defineProperty(window.visualViewport!, 'offsetTop', {
+      value: 0,
+      writable: true,
+    });
+    window.visualViewport!.dispatchEvent(new Event('resize'));
+  });
+  await withinTaskViewport(page, '.chat-composer');
+  await expect(page.getByLabel('提问内容')).toHaveValue('键盘遮挡回归');
+});
+
+for (const count of [1, 10]) {
+  test(`${count}张聊天草稿图片与键盘不遮挡移除和发送`, async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    await page.addInitScript(() => {
+      const viewport = new EventTarget();
+      Object.defineProperties(viewport, {
+        height: { value: 640, writable: true },
+        offsetTop: { value: 0, writable: true },
+      });
+      Object.defineProperty(window, 'visualViewport', {
+        value: viewport,
+        configurable: true,
+      });
+    });
+    await fixture(page, { product: true, admin: false });
+    await page.goto('/');
+    for (let index = 0; index < count; index++) {
+      await page.locator('.chat-photo-draft input[type=file]').setInputFiles({
+        name: `question-${index}.png`,
+        mimeType: 'image/png',
+        buffer: chatPhoto,
+      });
+      await expect(
+        page.getByRole('button', {
+          name: `移除提问图片 ${index + 1}`,
+          exact: true,
+        }),
+      ).toBeEnabled();
+    }
+    for (const index of [1, count]) {
+      const selector = `[aria-label="移除提问图片 ${index}"]`;
+      await page.locator(selector).scrollIntoViewIfNeeded();
+      await withinTaskViewport(page, selector);
+    }
+    await page.getByLabel('提问内容').fill('图片仍随问题发送');
+    await page.evaluate(() => {
+      Object.defineProperty(window.visualViewport!, 'height', {
+        value: 360,
+        writable: true,
+      });
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    });
+    for (const index of [1, count]) {
+      const selector = `[aria-label="移除提问图片 ${index}"]`;
+      await page.locator(selector).scrollIntoViewIfNeeded();
+      await withinTaskViewport(page, selector);
+    }
+    await withinTaskViewport(page, '.chat-composer');
+    await withinTaskViewport(page, '.messages');
+    await page.evaluate(() => {
+      Object.defineProperty(window.visualViewport!, 'offsetTop', {
+        value: 250,
+        writable: true,
+      });
+      window.visualViewport!.dispatchEvent(new Event('scroll'));
+    });
+    await withinTaskViewport(page, '.chat-composer');
+    await withinTaskViewport(page, '.messages');
+    await withinTaskViewport(page, `[aria-label="移除提问图片 ${count}"]`);
+    await page.screenshot({
+      path: `test-results/mobile-task/chat-attachments-${count}-keyboard.png`,
+      animations: 'disabled',
+    });
+    await page
+      .getByRole('button', { name: `移除提问图片 ${count}`, exact: true })
+      .click();
+    await expect(page.getByRole('button', { name: '发送问题' })).toBeEnabled();
+    await expect(page.getByLabel('提问内容')).toHaveValue('图片仍随问题发送');
+    await page.evaluate(() => {
+      Object.defineProperty(window.visualViewport!, 'offsetTop', {
+        value: 0,
+        writable: true,
+      });
+      Object.defineProperty(window.visualViewport!, 'height', {
+        value: 640,
+        writable: true,
+      });
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    });
+    await withinTaskViewport(page, '.chat-composer');
+  });
+}
+
+test('失败资料保留原因和重试，聊天与工具切换保留草稿', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 640 });
+  await fixture(page, { product: true, failed: true, admin: false });
+  await page.goto('/');
+  await expect(page.getByText('资料构建失败', { exact: true })).toBeVisible();
+  await page.getByText('查看失败原因', { exact: true }).click();
+  await expect(
+    page.getByText('未找到适用资料，请重新查找或补充准确型号。', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByLabel('提问内容').fill('仍然保留的问题');
+  const retry = page.waitForRequest(
+    (request) =>
+      request.url().includes('/knowledge-jobs') && request.method() === 'POST',
+  );
+  await page.getByRole('button', { name: '重试资料构建', exact: true }).click();
+  await retry;
+  await page.getByText('查看失败原因', { exact: true }).click();
+  await withinTaskViewport(page, '.chat-composer');
+  await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
+  await page.getByRole('button', { name: '使用说明书', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '充电与电池' })).toBeVisible();
+  await page.getByRole('button', { name: '返回设备聊天' }).click();
+  await expect(page.getByLabel('提问内容')).toHaveValue('仍然保留的问题');
+  await page.screenshot({
+    path: 'test-results/mobile-task/failed-knowledge.png',
+    animations: 'disabled',
+  });
+});
+
 async function fits(page: Page) {
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+}
+
+async function withinTaskViewport(page: Page, selector: string) {
+  // visualViewport resize listeners and textarea layout settle after the browser resize.
+  await expect(async () => {
+    const target = await page.locator(selector).boundingBox();
+    const nav = await page
+      .getByRole('navigation', { name: '移动页面导航' })
+      .boundingBox();
+    const topbar = await page.locator('.topbar').boundingBox();
+    expect(target).not.toBeNull();
+    expect(target!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height);
+    expect(target!.y + target!.height).toBeLessThanOrEqual(nav!.y);
+    expect(target!.x).toBeGreaterThanOrEqual(0);
+    expect(target!.x + target!.width).toBeLessThanOrEqual(
+      page.viewportSize()!.width,
+    );
+    expect(target!.height).toBeGreaterThanOrEqual(
+      selector === '.messages' ? 24 : 36,
+    );
+    expect(
+      await page.locator(selector).evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.bottom - 2,
+        );
+        return hit && element.contains(hit)
+          ? true
+          : {
+              hit: hit?.outerHTML.slice(0, 200),
+              rect: rect.toJSON(),
+              parent: element.parentElement?.getBoundingClientRect().toJSON(),
+            };
+      }),
+    ).toBe(true);
+  }).toPass({ timeout: 5000 });
+}
+
+for (const viewport of [
+  { width: 360, height: 640 },
+  { width: 390, height: 667 },
+  { width: 430, height: 844 },
+  { width: 430, height: 932 },
+  { width: 844, height: 390 },
+]) {
+  test(`任务首屏主操作 ${viewport.width}x${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await fixture(page, { admin: false });
+    await page.goto('/');
+    await expect(
+      page.getByRole('heading', { name: '认识你的产品' }),
+    ).toBeVisible();
+    await withinTaskViewport(page, '.identify-footer .ant-btn');
+    await page.screenshot({
+      path: `test-results/mobile-task/capture-${viewport.width}x${viewport.height}.png`,
+      animations: 'disabled',
+    });
+    await fixture(page, { product: true, admin: false });
+    await page.reload();
+    await expect(
+      page.getByRole('heading', { name: 'WH-1000XM5', exact: true }),
+    ).toBeVisible();
+    await withinTaskViewport(page, '.chat-composer');
+    await withinTaskViewport(page, '.messages');
+    await fits(page);
+    await page.screenshot({
+      path: `test-results/mobile-task/chat-${viewport.width}x${viewport.height}.png`,
+      animations: 'disabled',
+    });
+    await page.getByLabel('提问内容').fill('键盘出现后仍然可以发送的问题');
+    await page.setViewportSize({
+      width: viewport.width,
+      height: Math.min(viewport.height, 500),
+    });
+    await withinTaskViewport(page, '.chat-composer');
+    await expect(page.getByRole('button', { name: '发送问题' })).toBeEnabled();
+  });
 }
 
 for (const width of [320, 390, 1440]) {
@@ -360,13 +647,16 @@ test('手机设备工具、输入区与账号抽屉', async ({ page }) => {
     page.getByRole('heading', { name: 'WH-1000XM5', exact: true }),
   ).toBeVisible();
   await fits(page);
+  await page.locator('.speech-menu > summary').click();
   await expect(page.getByRole('button', { name: '录音提问' })).toBeVisible();
   await expect(page.getByLabel('上传录音')).toBeAttached();
+  await page.locator('.speech-menu > summary').click();
   await page.screenshot({
     path: 'test-results/ui-refresh/device-mobile.png',
     fullPage: true,
     animations: 'disabled',
   });
+  await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
   await page.getByRole('button', { name: '使用说明书', exact: true }).click();
   await expect(page.getByRole('heading', { name: '充电与电池' })).toBeVisible();
   await expect(page.getByText('已核验来源', { exact: true })).toBeVisible();
@@ -390,6 +680,7 @@ test('手机设备工具、输入区与账号抽屉', async ({ page }) => {
     fullPage: true,
     animations: 'disabled',
   });
+  await page.getByRole('button', { name: '返回设备聊天' }).click();
   await page.getByLabel('提问内容').fill('设备应该怎样充电？');
   await page.setViewportSize({ width: 390, height: 500 });
   await page.getByLabel('提问内容').scrollIntoViewIfNeeded();

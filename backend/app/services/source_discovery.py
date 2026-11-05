@@ -1,11 +1,12 @@
 """Bounded official candidates and one-level download links, without new trust grants."""
 
 import re
-from urllib.parse import urldefrag, urljoin, urlsplit
+from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
 from app.errors import DomainError
+from app.manufacturers import reviewed_entry_pages
 
 
 def allowed_url(url, domains):
@@ -33,15 +34,28 @@ def discover_candidates(model, known, search):
     code = compact(model["model_code"])
 
     def exact(row):
-        return bool(code and code in compact(row["url"] + " " + row.get("title", "")))
+        return bool(
+            not row.get("discoveryOnly")
+            and code
+            and code in compact(row["url"] + " " + row.get("title", ""))
+        )
 
     def rank(row):
-        return (not exact(row), not bool(re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)))
+        return (
+            not exact(row),
+            not bool(re.search(r"\.pdf$", urlsplit(row["url"]).path, re.I)),
+        )
 
     def add(rows):
         for row in rows:
             if allowed_url(row["url"], domains):
-                results.setdefault(urldefrag(row["url"])[0], row)
+                # Search and registered sources do not change a fixed entry's role.
+                value = (
+                    {**row, "discoveryOnly": True}
+                    if is_manufacturer_entry(model, row["url"])
+                    else row
+                )
+                results.setdefault(urldefrag(row["url"])[0], value)
 
     add(known)
     registered = set(results)
@@ -71,11 +85,55 @@ def discover_candidates(model, known, search):
             for key, row in results.items()
         ):
             break
+    entries = []
+    if not any(exact(row) for row in results.values()):
+        entries = [row for row in manufacturer_entries(model) if row["url"] not in results]
     old = sorted([row for key, row in results.items() if key in registered], key=rank)
     new = sorted([row for key, row in results.items() if key not in registered], key=rank)
     # Reserve space for both paths; a full stale registry cannot starve replacements.
-    selected = (old[:5] + new[:5] + old[5:] + new[5:])[:10]
+    reserved = 4 if entries else 5
+    selected = (old[:reserved] + new[:reserved] + entries[:2] + old[reserved:] + new[reserved:])[
+        :10
+    ]
     return sorted(selected, key=rank)
+
+
+def manufacturer_entries(model):
+    return [
+        {"url": url, "title": "品牌官方资料入口", "discoveryOnly": True}
+        for url in reviewed_entry_pages(model["brand_name"])
+        if allowed_url(url, model["official_domains"] or [])
+    ]
+
+
+def is_manufacturer_entry(model, url):
+    try:
+        parts = urlsplit(url)
+        return any(
+            parts.hostname == urlsplit(row["url"]).hostname
+            and unquote(parts.path).rstrip("/").casefold()
+            == unquote(urlsplit(row["url"]).path).rstrip("/").casefold()
+            for row in manufacturer_entries(model)
+        )
+    except ValueError:
+        return False
+
+
+def model_specific_page(url, title, model_code):
+    """A model in a search query is navigation, not a product identity."""
+    from app.services.recognition_sources import supports_model
+    from app.services.web_research import contains
+
+    path = unquote(urlsplit(url).path)
+    if re.search(r"/(?:search|collections?|catalog|categories)(?:/|$)", path, re.I):
+        return False
+    if contains(path, model_code):
+        # An explicit Pro/Ultra/etc path cannot borrow a shorter anchor title.
+        return supports_model("", model_code, path, trusted_brand=True)
+    return bool(
+        re.search(r"/(?:products?|manuals?|guides?|support)/[^/]+", path, re.I)
+        and supports_model("", model_code, title, trusted_brand=True)
+    )
 
 
 def _add_ranked(result, target, title, model_code, order, limit):
@@ -83,7 +141,7 @@ def _add_ranked(result, target, title, model_code, order, limit):
         return "".join(c for c in value.casefold() if c.isalnum())
 
     model = compact(model_code or "")
-    score = 0 if model and model in compact(target + " " + title) else 1
+    score = 0 if model and model in compact(unquote(urlsplit(target).path) + " " + title) else 1
     previous = result.get(target)
     if previous and previous[0] <= score:
         return
@@ -94,6 +152,7 @@ def _add_ranked(result, target, title, model_code, order, limit):
 
 def support_links(url, data, domains, *, model_code=None):
     """One manufacturer support-page hop; no arbitrary navigation crawl."""
+    from app.services.recognition_sources import supports_model
     from app.services.web_research import official_url
 
     if not official_url(url, domains):
@@ -112,8 +171,14 @@ def support_links(url, data, domains, *, model_code=None):
             and len(target) <= 2048
             and official_url(target, domains)
             and not re.search(r"\.(?:pdf|exe|zip|dmg|msi)$", path, re.I)
-            and re.search(
-                r"support|download|manual|help|guide|说明书|支持|下载", path + " " + label, re.I
+            and (
+                re.search(
+                    r"support|download|manual|help|guide|说明书|支持|下载", path + " " + label, re.I
+                )
+                or (
+                    model_code
+                    and supports_model("", model_code, path + " " + label, trusted_brand=True)
+                )
             )
         ):
             _add_ranked(result, target, label or "官方支持", model_code, order, 3)

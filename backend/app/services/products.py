@@ -8,6 +8,7 @@ from uuid import NAMESPACE_OID, uuid4, uuid5
 
 from app.db import execute, json_value, many, one
 from app.errors import DomainError, missing
+from app.manufacturers import reviewed_domains
 from app.security import digest, normalize
 
 ACTIVE = ("queued", "running", "waiting_for_user")
@@ -60,12 +61,15 @@ def product_model(connection, brand, code, region=None, hardware=None):
     brand_row = one(
         connection,
         (
-            "INSERT INTO brands(name,normalized_name) VALUES (:name,:normalized) "
+            "INSERT INTO brands(name,normalized_name,official_domains) "
+            "VALUES (:name,:normalized,CAST(:domains AS jsonb)) "
             "ON CONFLICT(normalized_name) DO UPDATE SET "
-            "normalized_name=EXCLUDED.normalized_name RETURNING *"
+            "official_domains=COALESCE(brands.official_domains,EXCLUDED.official_domains) "
+            "RETURNING *"
         ),
         name=brand,
         normalized=normalize(brand),
+        domains=json_value(domains) if (domains := reviewed_domains(brand)) is not None else None,
     )
     return one(
         connection,

@@ -8,6 +8,7 @@ export default defineConfig({
   timeout: 60000,
   use: {
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:5173',
+    channel: process.env.PLAYWRIGHT_CHANNEL || undefined,
     trace: 'retain-on-failure',
   },
   webServer: process.env.E2E_EXTERNAL_SERVER
