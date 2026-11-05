@@ -131,6 +131,10 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole('button', { name: '说明书 · 记忆 · 操作引导', exact: true })
+    .click();
+  await expect(page.getByLabel('本章个人补充')).toBeVisible();
   await page.screenshot({
     path: 'test-results/v1-personal-manual-mobile.png',
     fullPage: true,
@@ -180,6 +184,10 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole('button', { name: '说明书 · 记忆 · 操作引导', exact: true })
+    .click();
+  await expect(page.getByText('当前步骤 2')).toBeVisible();
   await page.screenshot({
     path: 'test-results/v1-guidance-mobile.png',
     fullPage: true,
@@ -205,11 +213,14 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '返回设备聊天', exact: true }).click();
+  await expect(page.getByLabel('提问内容')).toBeVisible();
   await page.screenshot({
     path: 'test-results/mvp-mobile.png',
     fullPage: true,
   });
   // 从真实历史恢复再删除，验证软删除立即屏蔽，UI不能继续沿用旧会话。
+  await page.locator('.conversation-menu > summary').click();
   await page.getByRole('button', { name: '历史会话', exact: true }).click();
   await page.getByRole('button', { name: '如何开机？', exact: true }).click();
   await page.getByRole('button', { name: '删除会话', exact: true }).click();
@@ -227,6 +238,8 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     `/api/v1/guidance-sessions?instanceId=${currentProduct.id}`,
   );
   const ownedGuides = (await guidesResponse.json()).items;
+  await page.locator('.conversation-menu > summary').click();
+  await page.getByRole('button', { name: '设备管理', exact: true }).click();
   await page.getByRole('button', { name: '删除产品', exact: true }).click();
   await page.getByLabel('输入删除以确认').fill('删除');
   await page.getByRole('button', { name: '确认删除' }).click();
