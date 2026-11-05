@@ -77,6 +77,33 @@ beforeEach(() => {
   sessionStorage.clear();
 });
 
+test('刷新失败设备时读取失败任务原因，仍保留重试入口', async () => {
+  vi.mocked(api).mockImplementation(async (path) => {
+    if (path === '/me/products')
+      return {
+        items: [
+          {
+            ...product,
+            identityStatus: 'verified',
+            knowledgeStatus: 'failed',
+            knowledgeJobId: 'failed-job',
+          },
+        ],
+      };
+    if (path === '/jobs/failed-job')
+      return {
+        id: 'failed-job',
+        status: 'failed',
+        progress: { percent: 0 },
+        lastError: '未找到适用于此型号的官方资料',
+      };
+    throw new Error('Unexpected request: ' + path);
+  });
+  render(<HomePage />);
+  expect(await screen.findByText('未找到适用于此型号的官方资料')).toBeVisible();
+  expect(screen.getByRole('button', { name: '重试资料构建' })).toBeEnabled();
+});
+
 test('刷新页面后保留待排除的候选，再继续补充', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   sessionStorage.setItem('itemtalk.recognition:viewer', id);

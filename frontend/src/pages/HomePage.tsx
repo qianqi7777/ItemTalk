@@ -29,8 +29,13 @@ import { ManualPanel } from '../features/manuals/ManualPanel';
 import { MemoryPanel } from '../features/memories/MemoryPanel';
 import { GuidancePanel } from '../features/guidance/GuidancePanel';
 import { DeleteAction } from '../components/DeleteAction';
+import { useCompactWorkspace } from '../hooks/useCompactWorkspace';
 
 export function HomePage() {
+  const compact = useCompactWorkspace();
+  const [supplementOpen, setSupplementOpen] = useState(false);
+  const [managementOpen, setManagementOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [photos, setPhotos] = useState<Asset[]>([]);
   const [discardedPhotos, setDiscardedPhotos] = useState<string[]>([]);
@@ -118,6 +123,23 @@ export function HomePage() {
     // 切换、删除或重新识别即使回到同一产品，也不能接受此前页面的迟到轮询。
     selectionRevision.current += 1;
     setProduct(value);
+    setJob(undefined);
+    setManagementOpen(false);
+    setToolsOpen(false);
+    // Terminal tasks are not polled; load their reason when selecting/restoring.
+    if (
+      !value?.knowledgeJobId ||
+      !['failed', 'partial'].includes(value.knowledgeStatus)
+    )
+      return;
+    const revision = selectionRevision.current;
+    void api<Job>(`/jobs/${value.knowledgeJobId}`)
+      .then((task) => {
+        if (revision === selectionRevision.current) setJob(task);
+      })
+      .catch(() => {
+        // Keep the product usable when the task record is temporarily unavailable.
+      });
   }, []);
   useEffect(() => {
     let active = true;
@@ -266,6 +288,7 @@ export function HomePage() {
       setRejectedCandidates([]);
       rememberRejections();
       setInput('');
+      setSupplementOpen(false);
     } catch (error) {
       if (revision === recognitionRevision.current)
         setError(error instanceof Error ? error.message : '识别请求失败');
@@ -343,11 +366,15 @@ export function HomePage() {
     setJob(undefined);
     setInput('');
     setManual(false);
+    setSupplementOpen(false);
     setError('');
   };
   return (
-    <main className="workspace" id="workspace">
-      <header className="page-heading">
+    <main
+      className={`workspace task-workspace ${product ? 'task-chat' : attempt ? 'task-candidates' : 'task-capture'} ${attempt && supplementOpen ? 'is-supplementing' : ''} ${manual ? 'is-manual' : ''}`}
+      id="workspace"
+    >
+      <header className="page-heading task-marketing">
         <div>
           <span className="eyebrow">设备工作区 / DEVICE WORKSPACE</span>
           <h1>
@@ -423,9 +450,26 @@ export function HomePage() {
             <span className="eyebrow">当前产品</span>
             <span className="product-brand">{product.brandName}</span>
             <h2>{product.modelCode}</h2>
-            <KnowledgeProgress product={product} job={job} />
+            <KnowledgeProgress product={product} job={job} compact={compact} />
           </div>
-          <div className="product-actions">
+          {compact && (
+            <Button
+              className="device-menu-button"
+              aria-expanded={managementOpen}
+              onClick={() => setManagementOpen(!managementOpen)}
+            >
+              设备管理
+            </Button>
+          )}
+          <div className="product-actions" hidden={compact && !managementOpen}>
+            {compact && (
+              <Button
+                onClick={restartIdentification}
+                disabled={busy || chatBusy || guidanceBusy}
+              >
+                重新识别
+              </Button>
+            )}
             <DeleteAction
               path={`/me/products/${product.id}`}
               label="删除产品"
@@ -471,21 +515,22 @@ export function HomePage() {
                 ? '型号已核验'
                 : '型号待来源核验'}
             </span>
-            {['failed', 'partial'].includes(product.knowledgeStatus) && (
-              <Button
-                loading={busy}
-                onClick={() =>
-                  product.identityStatus === 'verified'
-                    ? void retryBuild()
-                    : selectProduct(undefined)
-                }
-              >
-                {product.identityStatus === 'verified'
-                  ? '重试资料构建'
-                  : '补充型号信息'}
-              </Button>
-            )}
           </div>
+          {['failed', 'partial'].includes(product.knowledgeStatus) && (
+            <Button
+              className="knowledge-retry"
+              loading={busy}
+              onClick={() =>
+                product.identityStatus === 'verified'
+                  ? void retryBuild()
+                  : selectProduct(undefined)
+              }
+            >
+              {product.identityStatus === 'verified'
+                ? '重试资料构建'
+                : '补充型号信息'}
+            </Button>
+          )}
         </section>
       )}
       {!product && (
@@ -501,90 +546,114 @@ export function HomePage() {
               </div>
               <span className="step-counter">STEP 01</span>
             </div>
-            <RecognitionPhotos
-              key={recognitionEpoch}
-              photos={photos}
-              disabled={
-                busy ||
-                (!!attempt &&
-                  ['queued', 'processing'].includes(attempt.status)) ||
-                (attempt?.roundNo ?? 0) >= (attempt?.maxRounds ?? 4)
-              }
-              onUploaded={(photo) =>
-                setPhotos((old) =>
-                  old.some((value) => value.id === photo.id)
-                    ? old
-                    : [...old, photo].slice(0, 10),
-                )
-              }
-              onRemove={(id) => {
-                setPhotos((old) => old.filter((value) => value.id !== id));
-                if (attempt?.photos?.some((value) => value.id === id)) {
-                  setDiscardedPhotos((old) => [...new Set([...old, id])]);
-                } else {
-                  void api(`/assets/${id}`, { method: 'DELETE' }).catch(() =>
-                    setError(
-                      '照片已从本轮移除，但上传文件暂未删除，可稍后在账号中清理。',
-                    ),
-                  );
-                }
-              }}
-              onError={setError}
-              onUploading={setUploading}
-            />
-            <div className="input-divider">
-              <span>也可以用文字开始</span>
-            </div>
-            <label className="text-label" htmlFor="product-description">
-              或者，描述一下你的产品
-            </label>
-            <Input.TextArea
-              id="product-description"
-              placeholder="例如：像一台苹果手机，背面有两个镜头；也可以补充品牌或你注意到的特点…"
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              autoSize={{ minRows: 3 }}
-              maxLength={10000}
-            />
-            {!!rejectedCandidates.length && (
-              <Alert
-                type="info"
-                title="已排除这些候选，请补充文字或照片，再继续判断。"
-              />
-            )}
-            <div className="identify-footer">
-              <small>
-                <ShieldCheck size={14} aria-hidden="true" />
-                照片保持私有，仅用于识别；将发送至模型服务处理。
-              </small>
-              <Button
-                type="primary"
-                aria-label={attempt ? '综合照片继续判断' : '开始识别'}
-                loading={busy}
+            <div
+              className={`recognition-inputs ${attempt && !supplementOpen ? 'is-collapsed' : ''}`}
+            >
+              {compact && attempt && supplementOpen && (
+                <Button
+                  className="supplement-back"
+                  onClick={() => setSupplementOpen(false)}
+                >
+                  返回候选比较
+                </Button>
+              )}
+              <RecognitionPhotos
+                compact={compact}
+                collapsed={compact && !!attempt && !supplementOpen}
+                key={recognitionEpoch}
+                photos={photos}
                 disabled={
                   busy ||
-                  uploading ||
-                  (!photos.length && !input.trim()) ||
                   (!!attempt &&
                     ['queued', 'processing'].includes(attempt.status)) ||
-                  (attempt?.roundNo ?? 0) >= (attempt?.maxRounds ?? 4) ||
-                  (attempt?.status === 'waiting_for_user' &&
-                    !input.trim() &&
-                    !discardedPhotos.length &&
-                    !photos.some(
-                      (photo) =>
-                        !attempt.photos?.some((old) => old.id === photo.id),
-                    ))
+                  (attempt?.roundNo ?? 0) >= (attempt?.maxRounds ?? 4)
                 }
-                onClick={() => void identify()}
+                onUploaded={(photo) =>
+                  setPhotos((old) =>
+                    old.some((value) => value.id === photo.id)
+                      ? old
+                      : [...old, photo].slice(0, 10),
+                  )
+                }
+                onRemove={(id) => {
+                  setPhotos((old) => old.filter((value) => value.id !== id));
+                  if (attempt?.photos?.some((value) => value.id === id)) {
+                    setDiscardedPhotos((old) => [...new Set([...old, id])]);
+                  } else {
+                    void api(`/assets/${id}`, { method: 'DELETE' }).catch(() =>
+                      setError(
+                        '照片已从本轮移除，但上传文件暂未删除，可稍后在账号中清理。',
+                      ),
+                    );
+                  }
+                }}
+                onError={setError}
+                onUploading={setUploading}
+              />
+              <details
+                className="recognition-text"
+                open={compact ? supplementOpen || !!input || undefined : true}
               >
-                {attempt ? '综合照片继续判断' : '开始识别'}
-                <ChevronRight size={16} />
-              </Button>
+                <summary>补充文字或型号</summary>
+                <div className="input-divider">
+                  <span>也可以用文字开始</span>
+                </div>
+                <label className="text-label" htmlFor="product-description">
+                  或者，描述一下你的产品
+                </label>
+                <Input.TextArea
+                  id="product-description"
+                  placeholder="例如：像一台苹果手机，背面有两个镜头；也可以补充品牌或你注意到的特点…"
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  autoSize={{
+                    minRows: compact ? 2 : 3,
+                    maxRows: compact ? 4 : undefined,
+                  }}
+                  maxLength={10000}
+                />
+              </details>
+              {!!rejectedCandidates.length && (
+                <Alert
+                  type="info"
+                  title="已排除这些候选，请补充文字或照片，再继续判断。"
+                />
+              )}
+              <div className="identify-footer">
+                <small>
+                  <ShieldCheck size={14} aria-hidden="true" />
+                  照片保持私有，仅用于识别；将发送至模型服务处理。
+                </small>
+                <Button
+                  type="primary"
+                  aria-label={attempt ? '综合照片继续判断' : '开始识别'}
+                  loading={busy}
+                  disabled={
+                    busy ||
+                    uploading ||
+                    (!photos.length && !input.trim()) ||
+                    (!!attempt &&
+                      ['queued', 'processing'].includes(attempt.status)) ||
+                    (attempt?.roundNo ?? 0) >= (attempt?.maxRounds ?? 4) ||
+                    (attempt?.status === 'waiting_for_user' &&
+                      !input.trim() &&
+                      !discardedPhotos.length &&
+                      !photos.some(
+                        (photo) =>
+                          !attempt.photos?.some((old) => old.id === photo.id),
+                      ))
+                  }
+                  onClick={() => void identify()}
+                >
+                  {attempt ? '综合照片继续判断' : '开始识别'}
+                  <ChevronRight size={16} />
+                </Button>
+              </div>
             </div>
             {attempt && (
-              <div>
+              <div className="recognition-output">
                 <RecognitionResult
+                  compact={compact}
                   attempt={attempt}
                   busy={busy || uploading}
                   onConfirm={(candidate) => void confirm(candidate)}
@@ -596,21 +665,29 @@ export function HomePage() {
                     });
                     setRejectedCandidates(rejected);
                     rememberRejections(attempt.id, rejected);
-                    document.getElementById('product-description')?.focus();
+                    setSupplementOpen(true);
+                    requestAnimationFrame(() =>
+                      document.getElementById('product-description')?.focus(),
+                    );
                   }}
                   onRestart={restartIdentification}
-                  onAddPhotos={() =>
+                  onAddPhotos={() => {
+                    setSupplementOpen(true);
                     document
                       .querySelector<HTMLInputElement>(
                         '#recognition-photos input[type=file]',
                       )
-                      ?.click()
-                  }
+                      ?.click();
+                  }}
                 />
                 {['waiting_for_user', 'failed'].includes(attempt.status) && (
                   <>
-                    <Button type="link" onClick={() => setManual(!manual)}>
-                      不在列表中？手动输入型号
+                    <Button
+                      className="manual-toggle"
+                      type="link"
+                      onClick={() => setManual(!manual)}
+                    >
+                      {manual ? '返回候选比较' : '不在列表中？手动输入型号'}
                     </Button>
                     {manual && (
                       <div className="manual-model">
@@ -679,12 +756,31 @@ export function HomePage() {
       )}
       {product ? (
         <div key={product.id} className="product-workbench">
-          <div className="product-tools" aria-label="设备资料与工具">
+          {compact && (
+            <Button
+              className="tools-toggle"
+              aria-expanded={toolsOpen}
+              onClick={() => setToolsOpen(!toolsOpen)}
+            >
+              {toolsOpen ? '返回设备聊天' : '说明书 · 记忆 · 操作引导'}
+            </Button>
+          )}
+          <div
+            className="product-tools"
+            aria-label="设备资料与工具"
+            hidden={compact && !toolsOpen}
+          >
             <ManualPanel product={product} />
             <MemoryPanel instanceId={product.id} />
             <GuidancePanel product={product} onBusyChange={setGuidanceBusy} />
           </div>
-          <ChatPanel product={product} onBusyChange={setChatBusy} />
+          <div className="workspace-chat" hidden={compact && toolsOpen}>
+            <ChatPanel
+              product={product}
+              onBusyChange={setChatBusy}
+              compact={compact}
+            />
+          </div>
         </div>
       ) : (
         <div className="how-it-works">

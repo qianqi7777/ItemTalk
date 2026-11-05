@@ -47,11 +47,24 @@ test('appearance candidates show reference evidence and uncertainty without inve
     ],
   };
   render(
-    <CandidateList candidates={[candidate]} busy={false} onConfirm={vi.fn()} />,
+    <CandidateList
+      compact
+      candidates={[candidate]}
+      busy={false}
+      onConfirm={vi.fn()}
+    />,
   );
   expect(
     screen.getByRole('img', { name: 'Acme Phone 16 参考图' }),
   ).toBeVisible();
+  expect(
+    screen.getByText('尚未看到侧边按键', {
+      selector: '.candidate-key-feature',
+    }),
+  ).toBeVisible();
+  expect(screen.getByText('镜头排列相似')).not.toBeVisible();
+  expect(screen.getByText('需要正面照片')).not.toBeVisible();
+  await userEvent.click(screen.getByText('查看完整分析与来源'));
   expect(screen.getByText('镜头排列相似')).toBeVisible();
   expect(screen.getByText('需要正面照片')).toBeVisible();
   expect(

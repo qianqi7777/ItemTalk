@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Upload } from 'antd';
+import { Button, Modal, Upload } from 'antd';
 import { Camera, Upload as UploadIcon } from 'lucide-react';
 import { upload } from '../../services/api';
 import type { Asset } from '../../types/api';
@@ -11,6 +11,8 @@ export function RecognitionPhotos({
   onRemove,
   onError,
   onUploading,
+  compact = false,
+  collapsed = false,
 }: {
   photos: Asset[];
   disabled: boolean;
@@ -18,8 +20,11 @@ export function RecognitionPhotos({
   onRemove: (id: string) => void;
   onError: (message: string) => void;
   onUploading: (value: boolean) => void;
+  compact?: boolean;
+  collapsed?: boolean;
 }) {
   const [pending, setPending] = useState(0);
+  const [preview, setPreview] = useState<Asset>();
   const pendingRef = useRef(0);
   const active = useRef(true);
   useEffect(() => {
@@ -29,7 +34,10 @@ export function RecognitionPhotos({
     };
   }, []);
   return (
-    <div id="recognition-photos" className="recognition-photos">
+    <div
+      id="recognition-photos"
+      className={`recognition-photos ${compact ? 'photos-compact' : ''} ${collapsed ? 'photos-collapsed' : ''}`}
+    >
       <Upload.Dragger
         accept="image/jpeg,image/png,image/webp"
         multiple
@@ -91,7 +99,14 @@ export function RecognitionPhotos({
             {photos.map((photo, index) => (
               <li key={photo.id}>
                 {photo.readUrl && (
-                  <img src={photo.readUrl} alt={`产品照片 ${index + 1}`} />
+                  <button
+                    className="photo-preview"
+                    type="button"
+                    aria-label={`查看产品照片 ${index + 1}`}
+                    onClick={() => setPreview(photo)}
+                  >
+                    <img src={photo.readUrl} alt={`产品照片 ${index + 1}`} />
+                  </button>
                 )}
                 <Button
                   size="small"
@@ -109,6 +124,35 @@ export function RecognitionPhotos({
           </small>
         </>
       )}
+      <Modal
+        title="核对产品照片"
+        open={!!preview}
+        onCancel={() => setPreview(undefined)}
+        footer={
+          <>
+            {compact && preview && (
+              <Button
+                disabled={disabled || pending > 0}
+                onClick={() => {
+                  onRemove(preview.id);
+                  setPreview(undefined);
+                }}
+              >
+                从本轮移除这张照片
+              </Button>
+            )}
+            <Button onClick={() => setPreview(undefined)}>关闭照片</Button>
+          </>
+        }
+      >
+        {preview?.readUrl && (
+          <img
+            className="recognition-photo-preview"
+            src={preview.readUrl}
+            alt="产品照片原图"
+          />
+        )}
+      </Modal>
     </div>
   );
 }

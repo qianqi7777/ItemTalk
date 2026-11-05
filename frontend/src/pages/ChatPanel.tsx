@@ -105,11 +105,13 @@ export function ChatPanel({
   onBusyChange,
   initialConversation,
   onConversationChange,
+  compact = false,
 }: {
   product: ProductInstance;
   onBusyChange?: (busy: boolean) => void;
   initialConversation?: RestoredConversation;
   onConversationChange?: (id: string) => void;
+  compact?: boolean;
 }) {
   const [conversation, setConversation] = useState(
     initialConversation?.id || '',
@@ -458,8 +460,72 @@ export function ChatPanel({
         setError(error instanceof Error ? error.message : '查询失败');
     }
   };
+  const toolbar = (
+    <div className="conversation-toolbar inline-actions">
+      {conversation && (
+        <DeleteAction
+          path={`/conversations/${conversation}`}
+          label="删除会话"
+          explanation="当前会话、反馈和由它产生的记忆将删除。仍被其他内容引用的照片会保留。"
+          disabled={busy || loadingHistory || uploading}
+          onBusyChange={setBusy}
+          onDeleted={() => {
+            if (!mounted.current) return;
+            conversationRevision.current += 1;
+            setConversation('');
+            setMessages([]);
+            setMessageCursor(null);
+            setRunId('');
+            setRetryDraft(undefined);
+            setPhotos([]);
+            setHistory((old) => old.filter((item) => item.id !== conversation));
+            setDraft('');
+            setCitations([]);
+            setError('');
+            onConversationChange?.('');
+          }}
+        />
+      )}
+      <Button
+        disabled={busy || loadingHistory || uploading}
+        onClick={() => {
+          setHistoryOpen(!historyOpen);
+          if (!historyOpen) void loadHistory();
+        }}
+      >
+        历史会话
+      </Button>
+      <Button
+        disabled={busy || loadingHistory || uploading}
+        onClick={() => {
+          conversationRevision.current += 1;
+          setConversation('');
+          setMessages([]);
+          setMessageCursor(null);
+          setRunId('');
+          setRetryDraft(undefined);
+          setPhotos([]);
+          setError('');
+          setHistoryOpen(false);
+          setInput('');
+          setDraft('');
+          setCitations([]);
+          onConversationChange?.('');
+        }}
+      >
+        新建会话
+      </Button>
+    </div>
+  );
+  const speech = (
+    <SpeechInput
+      onConfirm={(text) =>
+        setInput((current) => (current ? `${current}\n${text}` : text))
+      }
+    />
+  );
   return (
-    <section className="chat-panel">
+    <section className={`chat-panel ${compact ? 'chat-compact' : ''}`}>
       <div className="section-heading">
         <span className="section-icon">
           <MessageCircle size={20} aria-hidden="true" />
@@ -473,63 +539,7 @@ export function ChatPanel({
           依据资料回答
         </span>
       </div>
-      <div className="conversation-toolbar inline-actions">
-        {conversation && (
-          <DeleteAction
-            path={`/conversations/${conversation}`}
-            label="删除会话"
-            explanation="当前会话、反馈和由它产生的记忆将删除。仍被其他内容引用的照片会保留。"
-            disabled={busy || loadingHistory || uploading}
-            onBusyChange={setBusy}
-            onDeleted={() => {
-              if (!mounted.current) return;
-              conversationRevision.current += 1;
-              setConversation('');
-              setMessages([]);
-              setMessageCursor(null);
-              setRunId('');
-              setRetryDraft(undefined);
-              setPhotos([]);
-              setHistory((old) =>
-                old.filter((item) => item.id !== conversation),
-              );
-              setDraft('');
-              setCitations([]);
-              setError('');
-              onConversationChange?.('');
-            }}
-          />
-        )}
-        <Button
-          disabled={busy || loadingHistory || uploading}
-          onClick={() => {
-            setHistoryOpen(!historyOpen);
-            if (!historyOpen) void loadHistory();
-          }}
-        >
-          历史会话
-        </Button>
-        <Button
-          disabled={busy || loadingHistory || uploading}
-          onClick={() => {
-            conversationRevision.current += 1;
-            setConversation('');
-            setMessages([]);
-            setMessageCursor(null);
-            setRunId('');
-            setRetryDraft(undefined);
-            setPhotos([]);
-            setError('');
-            setHistoryOpen(false);
-            setInput('');
-            setDraft('');
-            setCitations([]);
-            onConversationChange?.('');
-          }}
-        >
-          新建会话
-        </Button>
-      </div>
+      {!compact && toolbar}
       {historyOpen && (
         <aside className="conversation-history" aria-label="历史会话">
           <form
@@ -779,53 +789,76 @@ export function ChatPanel({
           }
         />
       )}
-      {speechEnabled && !busy && (
-        <SpeechInput
-          onConfirm={(text) =>
-            setInput((current) => (current ? `${current}\n${text}` : text))
-          }
-        />
-      )}
-      <div className="chat-photo-draft">
-        <Upload
-          accept="image/jpeg,image/png,image/webp"
-          showUploadList={false}
-          disabled={busy || loadingHistory || uploading || photos.length >= 10}
-          beforeUpload={(file) => {
-            void attachPhoto(file);
-            return false;
-          }}
-        >
-          <Button
-            aria-label="添加提问图片"
-            icon={<ImagePlus size={16} aria-hidden="true" />}
-            loading={uploading}
+      <div className="chat-input-tools">
+        {compact && (
+          <details className="conversation-menu">
+            <summary>会话操作</summary>
+            {toolbar}
+          </details>
+        )}
+        {speechEnabled &&
+          !busy &&
+          (compact ? (
+            <details className="speech-menu">
+              <summary>语音</summary>
+              <div className="speech-popover">{speech}</div>
+            </details>
+          ) : (
+            speech
+          ))}
+        <div className="chat-photo-draft">
+          <Upload
+            accept="image/jpeg,image/png,image/webp"
+            showUploadList={false}
             disabled={
               busy || loadingHistory || uploading || photos.length >= 10
             }
+            beforeUpload={(file) => {
+              void attachPhoto(file);
+              return false;
+            }}
           >
-            添加图片
-          </Button>
-        </Upload>
-        {!!photos.length && (
-          <div aria-label="待发送图片" aria-live="polite">
-            <QuestionImages assets={photos} />
-            <small>图片将随下一条问题发送，可补充文字或移除。</small>
-            {photos.map((photo, index) => (
-              <Button
-                key={photo.id}
-                size="small"
-                disabled={busy || uploading}
-                aria-label={`移除提问图片 ${index + 1}`}
-                onClick={() =>
-                  setPhotos((old) => old.filter((item) => item.id !== photo.id))
-                }
-              >
-                移除图片 {index + 1}
-              </Button>
-            ))}
-          </div>
-        )}
+            <Button
+              aria-label="添加提问图片"
+              icon={<ImagePlus size={16} aria-hidden="true" />}
+              loading={uploading}
+              disabled={
+                busy || loadingHistory || uploading || photos.length >= 10
+              }
+            >
+              添加图片
+            </Button>
+          </Upload>
+          {!!photos.length && (
+            <div
+              className="chat-draft-attachments"
+              aria-label="待发送图片"
+              aria-live="polite"
+            >
+              {photos.map((photo, index) => (
+                <figure className="chat-draft-photo" key={photo.id}>
+                  {photo.readUrl && (
+                    <a href={photo.readUrl} target="_blank" rel="noreferrer">
+                      <img src={photo.readUrl} alt={`提问图片 ${index + 1}`} />
+                    </a>
+                  )}
+                  <Button
+                    size="small"
+                    disabled={busy || uploading}
+                    aria-label={`移除提问图片 ${index + 1}`}
+                    onClick={() =>
+                      setPhotos((old) =>
+                        old.filter((item) => item.id !== photo.id),
+                      )
+                    }
+                  >
+                    移除
+                  </Button>
+                </figure>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       <form
         className="chat-composer"
@@ -839,7 +872,7 @@ export function ChatPanel({
           placeholder="输入你的问题，答案会附上资料来源"
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          autoSize={{ minRows: 2, maxRows: 5 }}
+          autoSize={{ minRows: compact ? 1 : 2, maxRows: compact ? 4 : 5 }}
           maxLength={10000}
           disabled={busy || loadingHistory || uploading}
         />

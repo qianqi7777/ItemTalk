@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -12,11 +12,36 @@ const ids = [
   '11111111-1111-4111-8111-111111111111',
   '22222222-2222-4222-8222-222222222222',
 ];
-for (const width of [320, 390, 1440]) {
+async function candidateActionsFit(page: Page) {
+  const nav = await page
+    .getByRole('navigation', { name: '移动页面导航' })
+    .boundingBox();
+  for (const name of ['确认此型号', '继续补拍']) {
+    const action = page.getByRole('button', { name, exact: true });
+    const rect = await action.boundingBox();
+    expect(rect!.y).toBeGreaterThanOrEqual(54);
+    expect(rect!.y + rect!.height).toBeLessThanOrEqual(nav!.y);
+    expect(
+      await action.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.bottom - 2,
+        );
+        return !!hit && element.contains(hit);
+      }),
+    ).toBe(true);
+  }
+}
+for (const width of [320, 360, 390, 430, 1440]) {
   test(`外观候选、多轮补拍、刷新恢复与用户选择 ${width}px`, async ({
     page,
   }) => {
-    await page.setViewportSize({ width, height: 1000 });
+    await page.setViewportSize({
+      width,
+      height:
+        width === 360 ? 640 : width === 390 ? 667 : width === 430 ? 844 : 1000,
+    });
     const photos: {
       id: string;
       mimeType: string;
@@ -183,10 +208,24 @@ for (const width of [320, 390, 1440]) {
       page.getByRole('img', { name: '产品照片 1', exact: true }),
     ).toBeVisible();
     await page.getByRole('button', { name: '开始识别', exact: true }).click();
+    if (width < 800)
+      await page.getByText('外观观察与判断说明', { exact: true }).click();
     await expect(
       page.getByText('先看看它是什么', { exact: true }),
     ).toBeVisible();
+    if (width < 800)
+      await page.getByText('外观观察与判断说明', { exact: true }).click();
     await expect(page.locator('.candidate')).toHaveCount(2);
+    if (width < 800) {
+      const feature = await page
+        .locator('.candidate-key-feature')
+        .first()
+        .boundingBox();
+      const actions = await page.locator('.candidate-actions').boundingBox();
+      const items = await page.locator('.candidate-items').boundingBox();
+      expect(feature!.y).toBeGreaterThanOrEqual(items!.y);
+      expect(feature!.y + feature!.height).toBeLessThanOrEqual(actions!.y);
+    }
     await expect(
       page.getByText('外观猜测 · 资料尚未核实', { exact: true }),
     ).toHaveCount(2);
@@ -199,6 +238,16 @@ for (const width of [320, 390, 1440]) {
     await expect(
       page.getByRole('button', { name: '确认此型号', exact: true }),
     ).toBeEnabled();
+    if (width < 800) {
+      await candidateActionsFit(page);
+      await page
+        .getByRole('button', { name: '查看产品照片 1', exact: true })
+        .click();
+      await expect(
+        page.getByRole('dialog', { name: '核对产品照片' }),
+      ).toBeVisible();
+      await page.getByRole('button', { name: '关闭照片', exact: true }).click();
+    }
     await page
       .getByRole('button', { name: '都不是，排除这些候选', exact: true })
       .click();
@@ -211,12 +260,16 @@ for (const width of [320, 390, 1440]) {
     await expect(
       page.getByRole('button', { name: '综合照片继续判断', exact: true }),
     ).toBeDisabled();
-    await expect(
-      page.getByText('补拍完整正面和屏幕边框', { exact: true }),
-    ).toBeVisible();
+    if (width >= 800)
+      await expect(
+        page.getByText('补拍完整正面和屏幕边框', { exact: true }),
+      ).toBeVisible();
     await expect(page.getByText(/60%/)).toHaveCount(0);
     const chooser = page.waitForEvent('filechooser');
-    await page.getByRole('button', { name: '继续补拍', exact: true }).click();
+    if (width < 800)
+      await page.getByText('继续添加照片', { exact: true }).click();
+    else
+      await page.getByRole('button', { name: '继续补拍', exact: true }).click();
     await (
       await chooser
     ).setFiles({ name: 'front.png', mimeType: 'image/png', buffer: front });
@@ -233,6 +286,41 @@ for (const width of [320, 390, 1440]) {
     await expect(
       page.getByRole('img', { name: '产品照片 2', exact: true }),
     ).toBeVisible();
+    if (width < 800) {
+      await candidateActionsFit(page);
+      const feature = await page
+        .locator('.candidate-key-feature')
+        .first()
+        .boundingBox();
+      const actions = await page.locator('.candidate-actions').boundingBox();
+      const items = await page.locator('.candidate-items').boundingBox();
+      expect(feature!.y).toBeGreaterThanOrEqual(items!.y);
+      expect(feature!.y + feature!.height).toBeLessThanOrEqual(actions!.y);
+      const nav = await page
+        .getByRole('navigation', { name: '移动页面导航' })
+        .boundingBox();
+      const confirm = await page
+        .getByRole('button', { name: '确认此型号', exact: true })
+        .boundingBox();
+      const photo = await page
+        .getByRole('button', { name: '继续补拍', exact: true })
+        .boundingBox();
+      expect(confirm!.y).toBeGreaterThanOrEqual(54);
+      expect(confirm!.y + confirm!.height).toBeLessThanOrEqual(nav!.y);
+      expect(photo!.y + photo!.height).toBeLessThanOrEqual(nav!.y);
+      await page.screenshot({
+        path: `test-results/mobile-task/candidates-${width}.png`,
+        animations: 'disabled',
+      });
+      await expect(
+        page.getByText('继续添加照片', { exact: true }),
+      ).not.toBeVisible();
+      await page.getByText('查看完整分析与来源', { exact: true }).click();
+      await expect(
+        page.getByRole('link', { name: 'Phone 18 产品资料' }),
+      ).toBeVisible();
+      await page.getByText('查看完整分析与来源', { exact: true }).click();
+    }
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -246,5 +334,139 @@ for (const width of [320, 390, 1440]) {
     await page.getByRole('button', { name: '确认此型号', exact: true }).click();
     await expect(page.getByText('资料已就绪', { exact: true })).toBeVisible();
     expect(selected).toBe(candidates[2].candidateId);
+  });
+}
+
+for (const count of [0, 3]) {
+  test(`360短屏保留十张照片、${count}个长候选及第4轮手动入口`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    const id = ids[0];
+    await page.addInitScript(
+      (attemptId) =>
+        sessionStorage.setItem('itemtalk.recognition:visual-user', attemptId),
+      id,
+    );
+    const photos = Array.from({ length: 10 }, (_, index) => ({
+      id: `photo-${index}`,
+      mimeType: 'image/png',
+      sizeBytes: 1200,
+      status: 'available',
+      kind: 'product_photo',
+      readUrl: 'data:image/png;base64,' + back.toString('base64'),
+    }));
+    await page.route('**/api/v1/**', async (route) => {
+      const pathname = new URL(route.request().url()).pathname.replace(
+        /^.*\/api\/v1/,
+        '',
+      );
+      if (pathname === '/me')
+        return route.fulfill({
+          json: { id: 'visual-user', email: 'preview@example.com' },
+        });
+      if (pathname === '/capabilities')
+        return route.fulfill({
+          json: { speechToText: false, adminConsole: false },
+        });
+      if (pathname === '/me/products')
+        return route.fulfill({ json: { items: [] } });
+      if (pathname === `/identifications/${id}`)
+        return route.fulfill({
+          json: {
+            id,
+            status: 'waiting_for_user',
+            jobId: 'job',
+            roundNo: 4,
+            maxRounds: 4,
+            photos,
+            clarification: '仍需用户确认，不能根据外观推断地区或硬件修订。',
+            candidates: Array.from({ length: count }, (_, index) => ({
+              candidateId: `candidate-${index}`,
+              brandName: '长品牌名称',
+              modelCode: `Phone ${index} 超长硬件型号后缀和修订版本`,
+              basis: 'appearance',
+              confidence: 0,
+              evidenceLevel: 'visual_guess',
+              evidence: '仍需核实',
+              matchReasons: ['可见外观相近'.repeat(20)],
+              differences: ['按键与边框仍需核对'],
+              missingEvidence: ['需要铭牌确认地区与硬件版本'],
+              referenceImage:
+                'data:image/png;base64,' + front.toString('base64'),
+              sources: [
+                {
+                  id: 'source',
+                  title: '该型号的参考资料',
+                  url: 'https://vendor.example/device',
+                  sourceKind: 'official',
+                },
+              ],
+            })),
+          },
+        });
+      return route.fulfill({ status: 404, json: {} });
+    });
+    await page.goto('/');
+    await expect(
+      page.getByRole('img', { name: /产品照片 \d+$/, exact: false }),
+    ).toHaveCount(10);
+    await expect(page.locator('.candidate')).toHaveCount(count);
+    const nav = await page
+      .getByRole('navigation', { name: '移动页面导航' })
+      .boundingBox();
+    if (count) {
+      await page.getByRole('radio').nth(2).check();
+      const confirm = await page
+        .getByRole('button', { name: '确认此型号', exact: true })
+        .boundingBox();
+      expect(confirm!.y + confirm!.height).toBeLessThanOrEqual(nav!.y);
+      await expect(
+        page.getByRole('button', { name: '确认此型号', exact: true }),
+      ).toBeEnabled();
+    } else
+      await expect(
+        page.getByRole('button', { name: '确认此型号', exact: true }),
+      ).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: '继续补拍', exact: true }),
+    ).toBeDisabled();
+    await page.screenshot({
+      path: `test-results/mobile-task/long-candidates-${count}-ten-photos.png`,
+      animations: 'disabled',
+    });
+    await page
+      .getByRole('button', { name: '不在列表中？手动输入型号' })
+      .click();
+    await page.getByLabel('品牌', { exact: true }).fill('Acme');
+    await page.getByLabel('型号', { exact: true }).fill('Phone Exact');
+    const manual = await page
+      .getByRole('button', { name: '确认手动型号', exact: true })
+      .boundingBox();
+    expect(manual!.y).toBeGreaterThanOrEqual(54);
+    expect(manual!.y + manual!.height).toBeLessThanOrEqual(nav!.y);
+    expect(
+      await page
+        .getByRole('button', { name: '确认手动型号', exact: true })
+        .evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.bottom - 2,
+          );
+          return !!hit && element.contains(hit);
+        }),
+    ).toBe(true);
+    await expect(
+      page.getByRole('button', { name: '确认手动型号', exact: true }),
+    ).toBeEnabled();
+    await page.screenshot({
+      path: `test-results/mobile-task/manual-model-${count}.png`,
+      animations: 'disabled',
+    });
+    await page
+      .getByRole('button', { name: '返回候选比较', exact: true })
+      .click();
+    if (count) await expect(page.getByRole('radio').nth(2)).toBeChecked();
   });
 }
