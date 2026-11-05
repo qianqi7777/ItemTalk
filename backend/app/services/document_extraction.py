@@ -13,10 +13,20 @@ from app.pdf_render import render_page
 from app.services.queue import progress
 
 
-def extract_scanned_pages(job, document, data, native_pages, scanned_pages, validate_authority):
+def extract_scanned_pages(
+    job, document, data, native_pages, scanned_pages, validate_authority, *, detail_first_page=False
+):
     with request_scope(time.monotonic() + 600):
         try:
-            return _extract(job, document, data, native_pages, scanned_pages, validate_authority)
+            return _extract(
+                job,
+                document,
+                data,
+                native_pages,
+                scanned_pages,
+                validate_authority,
+                detail_first_page=detail_first_page,
+            )
         except DomainError as error:
             if error.code != "ANSWER_TIMEOUT":
                 raise
@@ -25,7 +35,9 @@ def extract_scanned_pages(job, document, data, native_pages, scanned_pages, vali
             ) from None
 
 
-def _extract(job, document, data, native_pages, scanned_pages, validate_authority):
+def _extract(
+    job, document, data, native_pages, scanned_pages, validate_authority, *, detail_first_page=False
+):
     if len(scanned_pages) > 20:
         raise DomainError(422, "SOURCE_UNVERIFIED", "扫描页超过单份说明书 20 页识别上限")
     gateway = ModelGateway()
@@ -35,6 +47,7 @@ def _extract(job, document, data, native_pages, scanned_pages, validate_authorit
                 gateway.config.vision_provider,
                 gateway.config.vision_base_url,
                 gateway.config.vision_model,
+                *(["same-page-detail-v1"] if detail_first_page else []),
             ]
         ).encode()
     ).hexdigest()
@@ -66,7 +79,17 @@ def _extract(job, document, data, native_pages, scanned_pages, validate_authorit
                 validate_authority(connection)
             progress(job, "recognizing_scanned_pages", 10 + int(index / len(scanned_pages) * 80))
             image = render_page(data, page)
-            text = transcribe_page(gateway, image, page, job["user_id"])
+            detail = (
+                render_page(data, page, region="top_left")
+                if detail_first_page and page == scanned_pages[0]
+                else None
+            )
+            with transaction() as connection:
+                validate_authority(connection)
+            if detail is not None:
+                text = transcribe_page(gateway, image, page, job["user_id"], detail_image=detail)
+            else:
+                text = transcribe_page(gateway, image, page, job["user_id"])
             if output[page].strip() and not text:
                 raise DomainError(422, "SOURCE_UNVERIFIED", "扫描页识别遗漏已有文字，请重试")
             if (
@@ -95,6 +118,11 @@ def _extract(job, document, data, native_pages, scanned_pages, validate_authorit
                             "model": gateway.config.vision_model,
                             "configFingerprint": fingerprint,
                             "complete": True,
+                            **(
+                                {"detailRegion": "top_left"}
+                                if detail_first_page and page == scanned_pages[0]
+                                else {}
+                            ),
                         }
                     ),
                 )

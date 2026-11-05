@@ -174,6 +174,7 @@ def pages_for(job, model, version, data, mime):
             pages,
             scans,
             lambda c: authority(c, job, model["id"], version["id"]),
+            detail_first_page=True,
         )
     return pages
 

@@ -13,7 +13,7 @@ from app.deadlines import remaining
 from app.errors import DomainError
 
 
-def _render(data, page_no):
+def _render(data, page_no, region=None):
     if sys.platform != "win32":
         import resource
 
@@ -32,8 +32,12 @@ def _render(data, page_no):
                 or max(width, height) / min(width, height) > 20
             ):
                 raise ValueError("Page dimensions")
-            scale = min(3, 2400 / max(width, height))
-            bitmap = page.render(scale=scale, may_draw_forms=False)
+            if region not in {None, "top_left"}:
+                raise ValueError("Unsupported page region")
+            crop = (0, height / 2, width / 2, 0) if region else (0, 0, 0, 0)
+            divisor = 2 if region else 1
+            scale = min(3, 2400 / (max(width, height) / divisor))
+            bitmap = page.render(scale=scale, crop=crop, may_draw_forms=False)
             try:
                 image = bitmap.to_pil().convert("RGB")
                 try:
@@ -48,9 +52,11 @@ def _render(data, page_no):
             page.close()
 
 
-def render_page(data, page_no):
+def render_page(data, page_no, *, region=None):
     if len(data) > 50 * 1024 * 1024 or type(page_no) is not int or not 1 <= page_no <= 400:
         raise DomainError(422, "SOURCE_UNVERIFIED", "扫描页文件大小或页码超过限制")
+    if region not in {None, "top_left"}:
+        raise DomainError(422, "SOURCE_UNVERIFIED", "扫描页局部范围不支持")
     environment = {
         name: os.environ[name]
         for name in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP")
@@ -60,7 +66,9 @@ def render_page(data, page_no):
     try:
         result = subprocess.run(
             [sys.executable, "-m", "app.pdf_render", "--child"],  # noqa: S603
-            input=json.dumps({"data": base64.b64encode(data).decode(), "page": page_no}).encode(),
+            input=json.dumps(
+                {"data": base64.b64encode(data).decode(), "page": page_no, "region": region}
+            ).encode(),
             capture_output=True,
             timeout=remaining(30),
             env=environment,
@@ -75,4 +83,6 @@ def render_page(data, page_no):
 
 if __name__ == "__main__" and sys.argv[1:] == ["--child"]:
     payload = json.loads(sys.stdin.buffer.read(75 * 1024 * 1024))
-    sys.stdout.buffer.write(_render(base64.b64decode(payload["data"]), payload["page"]))
+    sys.stdout.buffer.write(
+        _render(base64.b64decode(payload["data"]), payload["page"], payload.get("region"))
+    )

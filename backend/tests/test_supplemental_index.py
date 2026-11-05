@@ -148,7 +148,7 @@ def test_scanned_supplement_uses_ocr_and_does_not_promote_identity(client, monke
 
     calls = []
     monkeypatch.setattr(
-        document_extraction, "transcribe_page", lambda *_: calls.append(True) or TEXT
+        document_extraction, "transcribe_page", lambda *_args, **_kwargs: calls.append(True) or TEXT
     )
     _, model, _ = build_supplement(client, monkeypatch, data=scanned_pdf(), mime="application/pdf")
     assert calls == [True]

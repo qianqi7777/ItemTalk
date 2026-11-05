@@ -175,3 +175,60 @@ def test_literal_document_ocr_has_its_own_budget_without_mutating_role_config(mo
         assert gateway.config is config
         assert config.vision_timeout_seconds == 60
     assert timeouts == [180]
+
+
+def test_scanned_cover_detail_is_the_same_page_not_another_source(monkeypatch):
+    from app.document_ocr import transcribe_page
+
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"text":"literal cover","unreadable":false}'},
+                    }
+                ]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        gateway = ModelGateway(
+            client, configuration=Settings(model_provider="dashscope", vision_api_key="test")
+        )
+        monkeypatch.setattr(gateway, "budget", lambda _: None)
+        assert (
+            transcribe_page(
+                gateway, b"whole", 1, "public-document", detail_image=b"same-page-detail"
+            )
+            == "literal cover"
+        )
+    parts = requests[0]["messages"][-1]["content"]
+    assert sum(p["type"] == "image_url" for p in parts) == 2
+    assert "同页" in requests[0]["messages"][0]["content"]
+
+
+def test_render_top_left_detail_keeps_pixel_bounds_and_rejects_arbitrary_regions():
+    from pypdf.generic import DecodedStreamObject, NameObject
+
+    from app.pdf_render import render_page
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=1400, height=1600)
+    stream = DecodedStreamObject()
+    stream.set_data(b"1 0 0 rg 0 800 700 800 re f")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    data = output.getvalue()
+    rendered = render_page(data, 1, region="top_left")
+    with Image.open(io.BytesIO(rendered)) as image:
+        assert max(image.size) <= 2400 and image.width > 1000
+        pixel = image.getpixel((image.width // 2, image.height // 2))
+        assert pixel[0] > 240 and pixel[1] < 15 and pixel[2] < 15
+    with pytest.raises(DomainError):
+        render_page(data, 1, region="arbitrary")

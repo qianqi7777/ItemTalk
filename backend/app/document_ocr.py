@@ -21,7 +21,7 @@ class Transcription(BaseModel):
     unreadable: bool
 
 
-def transcribe_page(gateway, image, page_no, subject):
+def transcribe_page(gateway, image, page_no, subject, *, detail_image=None):
     gateway.budget(subject)
     payload = {
         "model": gateway.config.vision_model,
@@ -43,6 +43,22 @@ def transcribe_page(gateway, image, page_no, subject):
             },
         ],
     }
+    if detail_image is not None:
+        payload["messages"][0]["content"] += (
+            "\n另有同页局部高清对照图，只用于辨认细小文字。"
+            "仍只转写原页面一次，不重复局部内容，不添加图外信息。"
+        )
+        payload["messages"][1]["content"].extend(
+            [
+                {"type": "text", "text": "以下是同一页左上区域的高清对照，不是另一份资料。"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/jpeg;base64," + base64.b64encode(detail_image).decode()
+                    },
+                },
+            ]
+        )
     if gateway.config.vision_provider == "dashscope":
         payload["enable_thinking"] = False
     # Full-page transcription can take longer than identifying a photographed
