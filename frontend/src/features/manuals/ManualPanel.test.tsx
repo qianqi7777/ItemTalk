@@ -1,7 +1,13 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
-import { api, post } from '../../services/api';
+import { ApiError, api, post } from '../../services/api';
 import type { Manual, ProductInstance } from '../../types/api';
 import { ManualPanel } from './ManualPanel';
 
@@ -188,4 +194,111 @@ test('撤销记忆后立即重读个人版本，不自动花费生成额度', as
   ).toBeVisible();
   expect(screen.queryByLabelText('本章个人补充')).toBeNull();
   expect(post).not.toHaveBeenCalled();
+});
+
+test('官方说明书404时仍展示独立补充资料及原文，不生成官方章节', async () => {
+  vi.mocked(api).mockImplementation(async (path) => {
+    if (path === '/products/model/supplemental-documents?instanceId=instance')
+      return {
+        items: [
+          {
+            id: 'supplement',
+            title: 'DEMO-100 第三方说明书',
+            url: 'https://manual.example/demo-100.pdf',
+            sourceKind: 'third_party',
+            fetchedAt: '2026-11-05T00:00:00Z',
+            pageCount: 12,
+            chunkCount: 8,
+            matchStatus: 'exact',
+            availabilityStatus: 'available',
+          },
+          {
+            id: 'unsafe',
+            title: '不可打开的来源',
+            url: 'javascript:alert(1)',
+            sourceKind: 'third_party',
+            fetchedAt: '2026-11-05T00:00:00Z',
+            pageCount: 1,
+            chunkCount: 1,
+            matchStatus: 'exact',
+            availabilityStatus: 'available',
+          },
+        ],
+      };
+    throw new ApiError(404, 'NOT_FOUND', '说明书尚未生成');
+  });
+  render(
+    <ManualPanel
+      product={{ ...product, knowledgeStatus: 'supplemental_ready' }}
+    />,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '使用说明书' }));
+  const link = await screen.findByRole('link', {
+    name: 'DEMO-100 第三方说明书',
+  });
+  expect(link).toHaveAttribute('href', 'https://manual.example/demo-100.pdf');
+  expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  expect(screen.getByText(/12 页/)).toBeVisible();
+  expect(screen.getByText('第三方资料 · 非官方核验')).toBeVisible();
+  expect(screen.getByText('不可打开的来源')).toBeVisible();
+  expect(screen.queryByRole('link', { name: '不可打开的来源' })).toBeNull();
+  expect(screen.queryByRole('navigation', { name: '说明书章节' })).toBeNull();
+  expect(post).not.toHaveBeenCalled();
+});
+
+test('官方资料已就绪但有补充资料时，列表独立加载且失败不影响官方章节', async () => {
+  vi.mocked(api).mockImplementation(async (path) => {
+    if (path.includes('/supplemental-documents'))
+      throw new Error('补充来源暂不可读');
+    return manual;
+  });
+  render(
+    <ManualPanel product={{ ...product, supplementalDocumentCount: 1 }} />,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '使用说明书' }));
+  expect(await screen.findByText('补充来源暂不可读')).toBeVisible();
+  expect(screen.getByRole('heading', { name: '开始使用' })).toBeVisible();
+  expect(screen.getByText(/长按电源键开机/)).toBeVisible();
+});
+
+test('切换产品后忽略旧补充列表的迟到响应', async () => {
+  let resolve!: (value: unknown) => void;
+  vi.mocked(api).mockImplementation(async (path) => {
+    if (path === '/products/model/supplemental-documents?instanceId=instance')
+      return new Promise((done) => {
+        resolve = done;
+      });
+    if (path.includes('/supplemental-documents')) return { items: [] };
+    return manual;
+  });
+  const { rerender } = render(
+    <ManualPanel product={{ ...product, supplementalDocumentCount: 1 }} />,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '使用说明书' }));
+  rerender(
+    <ManualPanel
+      product={{ ...product, id: 'second', supplementalDocumentCount: 1 }}
+    />,
+  );
+  expect(
+    await screen.findByText('当前没有可用的第三方补充资料。'),
+  ).toBeVisible();
+  await act(async () =>
+    resolve({
+      items: [
+        {
+          id: 'old',
+          title: '旧产品的资料',
+          url: 'https://old.example/manual',
+          sourceKind: 'third_party',
+          fetchedAt: '2026-11-05T00:00:00Z',
+          pageCount: 2,
+          chunkCount: 1,
+          matchStatus: 'exact',
+          availabilityStatus: 'available',
+        },
+      ],
+    }),
+  );
+  expect(screen.queryByText('旧产品的资料')).toBeNull();
 });

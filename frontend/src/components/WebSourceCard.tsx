@@ -25,6 +25,9 @@ export function WebSourceCard({ source }: { source: WebSource }) {
           : ''}
         检索于 {new Date(source.fetchedAt).toLocaleString('zh-CN')}
       </small>
+      {source.availabilityStatus === 'withdrawn' && (
+        <p role="note">来源已撤销，历史回答仅供参考，不要依此执行操作。</p>
+      )}
     </article>
   );
 }

@@ -382,3 +382,25 @@ def test_other_chinese_brand_touching_model_still_reports_conflict():
         web._match(model, "漫步者G3MPro说明书", "漫步者G3MPro蓝牙连接方法", False)
         == "identity_conflict"
     )
+
+
+@pytest.mark.parametrize("keep_first", [False, True])
+def test_website_throttle_stops_all_downloads_without_claiming_user_quota(sources, keep_first):
+    calls, fetched, rows, pages = sources
+    good = rows[0]
+    limited = {"title": good["title"], "url": "https://guide.example/limited"}
+    later = {"title": good["title"], "url": "https://guide.example/later"}
+    rows[:] = ([good] if keep_first else []) + [limited, later]
+    error = DomainError(503, "SOURCE_RATE_LIMITED", "资料网站暂时限制访问")
+    error.source_host = "redirected.example"
+    error.retry_after = 120
+    pages[limited["url"]] = error
+    pages[later["url"]] = pages[good["url"]]
+
+    result = research()
+
+    assert fetched == ([good["url"]] if keep_first else []) + [limited["url"]]
+    assert len(calls) == 1
+    assert result["reason"] == "source_rate_limited"
+    assert result["status"] == ("found" if keep_first else "empty")
+    assert [source["url"] for source in result["sources"]] == ([good["url"]] if keep_first else [])

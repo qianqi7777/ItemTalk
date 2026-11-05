@@ -129,7 +129,9 @@ export function HomePage() {
     // Terminal tasks are not polled; load their reason when selecting/restoring.
     if (
       !value?.knowledgeJobId ||
-      !['failed', 'partial'].includes(value.knowledgeStatus)
+      !['failed', 'partial', 'supplemental_ready'].includes(
+        value.knowledgeStatus,
+      )
     )
       return;
     const revision = selectionRevision.current;
@@ -254,9 +256,13 @@ export function HomePage() {
   usePolling(
     pollProduct,
     !!product &&
-      ['queued', 'researching', 'parsing', 'embedding'].includes(
-        product.knowledgeStatus,
-      ),
+      [
+        'queued',
+        'researching',
+        'researching_supplemental',
+        'parsing',
+        'embedding',
+      ].includes(product.knowledgeStatus),
   );
 
   const identify = async (
@@ -516,17 +522,23 @@ export function HomePage() {
                 : '型号待来源核验'}
             </span>
           </div>
-          {['failed', 'partial'].includes(product.knowledgeStatus) && (
+          {['failed', 'partial', 'supplemental_ready'].includes(
+            product.knowledgeStatus,
+          ) && (
             <Button
               className="knowledge-retry"
               loading={busy}
               onClick={() =>
-                product.identityStatus === 'verified'
+                ['verified', 'user_confirmed'].includes(
+                  product.identityStatus,
+                ) || product.knowledgeStatus === 'supplemental_ready'
                   ? void retryBuild()
                   : selectProduct(undefined)
               }
             >
-              {product.identityStatus === 'verified'
+              {['verified', 'user_confirmed'].includes(
+                product.identityStatus,
+              ) || product.knowledgeStatus === 'supplemental_ready'
                 ? '重试资料构建'
                 : '补充型号信息'}
             </Button>

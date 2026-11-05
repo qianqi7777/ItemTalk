@@ -47,6 +47,7 @@ const researchStages: Record<string, string> = {
 const lookupReasons: Record<string, string> = {
   no_results: '联网搜索未找到适用资料。',
   unreadable: '找到链接，但暂时无法读取原文。',
+  source_rate_limited: '资料网站暂时限制访问，已停止本轮读取，请稍后重试。',
   wrong_model: '搜索结果未能确认适用于当前型号。',
   official_required: '这项操作需要适用的官方资料，第三方教程不能替代。',
   search_unavailable: '联网搜索服务暂时不可用。',
@@ -633,7 +634,9 @@ export function ChatPanel({
               <>
                 {message.answerBasis === 'web' && (
                   <p className="answer-basis" role="note">
-                    基于联网资料
+                    {message.webLookup?.lookupMode === 'supplemental_index'
+                      ? '来自第三方补充资料库 · 非官方核验'
+                      : '基于联网资料'}
                   </p>
                 )}
                 {message.webLookup?.reason &&

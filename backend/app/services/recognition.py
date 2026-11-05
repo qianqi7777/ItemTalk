@@ -210,6 +210,13 @@ def recognize(
     search = search or SearchGateway()
     observation = None
     analysis = dict(previous)
+    source_limited = False
+
+    def mark_source_rate_limited():
+        nonlocal source_limited
+        source_limited = True
+
+    source_limit_notice = "资料网站暂时限制访问，已停止本轮读取，请稍后重试。"
     try:
         with time_limit(180 if gateway.config.vision_image_search_enabled else 140):
             on_progress("observing", 15)
@@ -227,17 +234,27 @@ def recognize(
                 from app.image_search import search_images
 
                 try:
-                    image_references = search_images(gateway, images, subject, fetcher=fetcher)
-                    analysis["imageSearchStatus"] = "found"
+                    image_references = search_images(
+                        gateway,
+                        images,
+                        subject,
+                        fetcher=fetcher,
+                        on_source_rate_limited=mark_source_rate_limited,
+                    )
+                    analysis["imageSearchStatus"] = (
+                        "source_rate_limited" if source_limited else "found"
+                    )
                 except DomainError as error:
-                    analysis["imageSearchStatus"] = "unavailable"
+                    analysis["imageSearchStatus"] = (
+                        "source_rate_limited" if source_limited else "unavailable"
+                    )
                     if error.status in {409, 429, 504}:
                         raise
             rows, visited = [], set()
             domains = brand_domains(observation.brandHint, registered_domains)
             for query in (
                 []
-                if image_references
+                if image_references or source_limited
                 else search_queries(observation, (registered_domains or {}).keys())
             ):
                 try:
@@ -260,21 +277,30 @@ def recognize(
                     break
             rows.sort(key=lambda row: not official_url(row["url"], domains))
             try:
-                text_references = fetch_references(rows[:5], observation, domains, fetcher=fetcher)
+                text_references = fetch_references(
+                    rows[:5],
+                    observation,
+                    domains,
+                    fetcher=fetcher,
+                    on_source_rate_limited=mark_source_rate_limited,
+                )
             except DomainError:
                 if not image_references:
                     raise
                 text_references = []
             references = image_references + text_references
             if not references:
-                analysis["researchStatus"] = "no_sources"
+                analysis["researchStatus"] = (
+                    "source_rate_limited" if source_limited else "no_sources"
+                )
                 return {
                     "candidates": selectable_candidates(
                         observation, Comparison(), [], previous, notes
                     ),
                     "analysis": analysis,
                     "clarification": (
-                        "已列出外观猜测，产品资料暂未核实。"
+                        (source_limit_notice if source_limited else "")
+                        + "已列出外观猜测，产品资料暂未核实。"
                         "可以选择你确认的型号，或排除后补充文字、照片。"
                     ),
                 }
@@ -289,7 +315,11 @@ def recognize(
                 observation, comparison, references, previous, notes, registered_domains
             )
             analysis.update(
-                researchStatus="found" if supported else "no_match",
+                researchStatus="source_rate_limited"
+                if source_limited
+                else "found"
+                if supported
+                else "no_match",
                 photoRequests=[
                     p.model_dump()
                     for p in (
@@ -300,11 +330,14 @@ def recognize(
             return {
                 "candidates": candidates,
                 "analysis": analysis,
-                "clarification": comparison.clarification
-                or (
-                    "请比较候选的匹配点和差异，选择型号或继续补拍。"
-                    if candidates
-                    else "现有资料与照片仍有不符，请按建议补拍或补充线索。"
+                "clarification": (source_limit_notice if source_limited else "")
+                + (
+                    comparison.clarification
+                    or (
+                        "请比较候选的匹配点和差异，选择型号或继续补拍。"
+                        if candidates
+                        else "现有资料与照片仍有不符，请按建议补拍或补充线索。"
+                    )
                 ),
             }
     except DomainError as error:

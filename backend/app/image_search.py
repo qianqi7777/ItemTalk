@@ -21,7 +21,7 @@ def public_image_url(value):
     return address.is_global and not getattr(address, "ipv4_mapped", None)
 
 
-def search_images(gateway, images, subject, *, fetcher=None):
+def search_images(gateway, images, subject, *, fetcher=None, on_source_rate_limited=None):
     from app.fetch import fetch_public
 
     fetcher = fetcher or fetch_public
@@ -65,6 +65,12 @@ def search_images(gateway, images, subject, *, fetcher=None):
                         }
                     )
                 except DomainError as error:
+                    if error.code == "SOURCE_RATE_LIMITED":
+                        if on_source_rate_limited:
+                            on_source_rate_limited()
+                        if not refs:
+                            raise
+                        break
                     if error.status in {409, 429}:
                         raise
                     if error.status == 504:

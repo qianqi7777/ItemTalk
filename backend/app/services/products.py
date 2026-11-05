@@ -268,11 +268,17 @@ def instance_view(connection, instance):
             "researching",
             "parsing",
             "embedding",
+            "researching_supplemental",
             "ready",
             "partial",
             "failed",
         }:
             status = "researching"
+    from app.services.supplemental_index import documents
+
+    supplemental = documents(connection, model["id"])
+    if supplemental and status in {"partial", "failed", "not_requested"}:
+        status = "supplemental_ready"
     return {
         "id": str(instance["id"]),
         "productModelId": str(model["id"]),
@@ -283,6 +289,7 @@ def instance_view(connection, instance):
         "verificationStatus": model["verification_status"],
         "knowledgeJobId": str(build["id"]) if build else None,
         "knowledgeStatus": status,
+        "supplementalDocumentCount": len(supplemental),
     }
 
 

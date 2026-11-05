@@ -4,6 +4,8 @@ import http.client
 import ipaddress
 import socket
 import ssl
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
@@ -124,6 +126,21 @@ def fetch_public(url, maximum=50 * 1024 * 1024, *, accepted_mimes=None):
             if response.status in (301, 302, 303, 307, 308):
                 url = urljoin(url, response.getheader("Location") or "")
                 continue
+            if response.status == 429:
+                # Website throttling is not the user's model/search quota.
+                value = response.getheader("Retry-After") or ""
+                try:
+                    delay = (
+                        int(value)
+                        if value.isdigit()
+                        else int((parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds())
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    delay = 60
+                error = DomainError(503, "SOURCE_RATE_LIMITED", "资料网站暂时限制访问，请稍后重试")
+                error.retry_after = max(1, min(delay, 86400))
+                error.source_host = parts.hostname
+                raise error
             if response.status != 200:
                 raise DomainError(502, "UPSTREAM_SEARCH_ERROR", "资料下载失败")
             mime = (response.getheader("Content-Type") or "").split(";")[0].lower()

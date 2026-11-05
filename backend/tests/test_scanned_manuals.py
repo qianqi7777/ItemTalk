@@ -50,7 +50,7 @@ def setup_manual(client, monkeypatch, data, responder):
     monkeypatch.setattr(
         SearchGateway,
         "search",
-        lambda *_: [{"url": "https://brand.example/manual.pdf", "title": "Manual"}],
+        lambda *_args, **_kwargs: [{"url": "https://brand.example/manual.pdf", "title": "Manual"}],
     )
     monkeypatch.setattr(knowledge, "fetch_public", lambda url: (url, "application/pdf", data))
     monkeypatch.setattr(ModelGateway, "request", responder)
@@ -69,6 +69,30 @@ def response(text="DEMO-100 CN\nPress power for three seconds."):
             }
         ]
     }
+
+
+def test_withdrawal_during_render_prevents_paid_ocr(client, monkeypatch):
+    from app.services import document_extraction
+
+    calls = []
+    product = setup_manual(
+        client, monkeypatch, scanned_pdf(), lambda *_args: calls.append(True) or response()
+    )
+
+    def render(*_args, **_kwargs):
+        with transaction() as c:
+            execute(
+                c,
+                "UPDATE sources SET verification_status='revoked' "
+                "WHERE url='https://brand.example/manual.pdf'",
+            )
+        return b"rendered-public-page"
+
+    monkeypatch.setattr(document_extraction, "render_page", render)
+    run_once(UUID(product["knowledgeJobId"]))
+    assert calls == [], "A source withdrawn during rendering must not consume OCR quota"
+    with transaction() as c:
+        assert one(c, "SELECT count(*) AS n FROM knowledge_chunks")["n"] == 0
 
 
 def test_mixed_scanned_manual_publishes_text_with_exact_original_page_numbers(client, monkeypatch):

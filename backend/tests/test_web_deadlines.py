@@ -1,6 +1,8 @@
 import http.client
 import io
 import time
+from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -148,3 +150,72 @@ def test_unicode_manual_path_is_encoded_before_http_request(monkeypatch):
     monkeypatch.setattr("app.fetch.PinnedHTTPS", Connection)
     monkeypatch.setattr("app.fetch.public_addresses", lambda url: (urlsplit(url), ["8.8.8.8"]))
     assert fetch_public("https://safe.example/G3说明书.pdf")[2] == b"manual"
+
+
+@pytest.mark.parametrize(
+    "retry_after,expected",
+    [
+        ("120", 120),
+        ("Thu, 05 Nov 2026 00:02:00 GMT", 120),
+        (None, 60),
+        ("not-a-date", 60),
+        ("-20", 60),
+        ("Thu, 05 Nov 2026 00:00:00 GMT", 1),
+        ("99999999999999999999", 86400),
+    ],
+)
+def test_redirected_source_throttle_uses_final_host_and_bounded_retry_after(
+    monkeypatch, retry_after, expected
+):
+    import app.fetch as module
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 5, tzinfo=UTC)
+
+    hosts, resolved, closed = [], [], []
+
+    class Response:
+        def __init__(self, status):
+            self.status = status
+
+        def getheader(self, key):
+            return {
+                "Location": "https://limited.example/manual.pdf",
+                "Retry-After": retry_after,
+            }.get(key)
+
+        def read(self, *_args):
+            pytest.fail("429 and redirect bodies must not be read")
+
+    class Connection:
+        def __init__(self, host, _address):
+            self.host = host
+            hosts.append(host)
+
+        def request(self, *_args, **_kwargs):
+            pass
+
+        def getresponse(self):
+            return Response(302 if self.host == "safe.example" else 429)
+
+        def close(self):
+            closed.append(self.host)
+
+    def addresses(url):
+        resolved.append(urlsplit(url).hostname)
+        return urlsplit(url), ["93.184.216.34"]
+
+    monkeypatch.setattr(module, "datetime", FixedDateTime)
+    monkeypatch.setattr(module, "PinnedHTTPS", Connection)
+    monkeypatch.setattr(module, "public_addresses", addresses)
+
+    with pytest.raises(DomainError) as caught:
+        fetch_public("https://safe.example/manual")
+
+    assert caught.value.code == "SOURCE_RATE_LIMITED"
+    assert caught.value.status == 503
+    assert caught.value.source_host == "limited.example"
+    assert caught.value.retry_after == expected
+    assert hosts == resolved == closed == ["safe.example", "limited.example"]

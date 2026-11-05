@@ -239,3 +239,65 @@ def test_search_does_not_trust_model_guess_to_be_public(private):
     item = observation()
     item["hypotheses"][0]["modelCode"] = private
     assert private not in " ".join(sources.search_queries(models.Observation(**item)))
+
+
+def test_reference_page_throttle_stops_later_pages_and_image_downloads():
+    from app.recognition_models import Observation
+    from app.services.recognition_sources import fetch_references
+
+    fetched = []
+    first = "https://vendor.example/first"
+    limited = "https://vendor.example/limited"
+    later = "https://vendor.example/later"
+
+    def fetch(url, **_kwargs):
+        fetched.append(url)
+        if url == limited:
+            raise DomainError(503, "SOURCE_RATE_LIMITED", "资料网站暂时限制访问")
+        return (
+            url,
+            "text/html",
+            (
+                b"<h1>Apple iPhone 16</h1><p>Product technical details</p>"
+                b'<img src="https://vendor.example/image.jpg">'
+            ),
+        )
+
+    refs = fetch_references(
+        [{"url": url, "title": "Apple iPhone 16"} for url in [first, limited, later]],
+        Observation(**observation()),
+        fetcher=fetch,
+    )
+
+    assert fetched == [first, limited]
+    assert refs and all(row["url"] == first for row in refs)
+    assert all("imageData" not in row for row in refs)
+
+
+def test_reference_image_throttle_stops_later_images_without_discarding_page_evidence():
+    from app.recognition_models import Observation
+    from app.services.recognition_sources import fetch_references
+
+    fetched = []
+    page_urls = ["https://vendor.example/first", "https://vendor.example/second"]
+
+    def fetch(url, **_kwargs):
+        fetched.append(url)
+        if url.endswith(".jpg"):
+            raise DomainError(503, "SOURCE_RATE_LIMITED", "资料网站暂时限制访问")
+        return (
+            url,
+            "text/html",
+            (
+                f'<h1>Apple iPhone 16</h1><p>Product technical details</p><img src="{url}.jpg">'
+            ).encode(),
+        )
+
+    refs = fetch_references(
+        [{"url": url, "title": "Apple iPhone 16"} for url in page_urls],
+        Observation(**observation()),
+        fetcher=fetch,
+    )
+
+    assert fetched == [*page_urls, page_urls[0] + ".jpg"]
+    assert {row["url"] for row in refs} == set(page_urls)

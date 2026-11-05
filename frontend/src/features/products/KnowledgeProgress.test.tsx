@@ -32,3 +32,14 @@ test('显示服务端研究阶段和失败信息', () => {
     '35',
   );
 });
+
+test('补充资料就绪不显示官方完成或持续加载，明确保留非官方提示', () => {
+  render(
+    <KnowledgeProgress
+      product={{ knowledgeStatus: 'supplemental_ready' } as ProductInstance}
+    />,
+  );
+  expect(screen.getByText('第三方资料可用 · 非官方核验')).toBeVisible();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.queryByText('资料已就绪')).not.toBeInTheDocument();
+});
