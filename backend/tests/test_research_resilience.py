@@ -16,6 +16,134 @@ from tests.test_api import identified_product
 pytestmark = pytest.mark.postgres
 
 
+@pytest.mark.parametrize(
+    "search_mode",
+    ["empty", "broken_exact", "redirect_home", "product_to_search", "product_to_collection"],
+)
+def test_reviewed_homepage_fallback_reaches_model_manual_without_indexing_navigation(
+    client, monkeypatch, search_mode
+):
+    from tests.test_parser import pdf_bytes
+
+    register_login(client)
+    product = identified_product(client)
+    with transaction() as connection:
+        execute(
+            connection,
+            "UPDATE brands SET name='ROSESELSA',normalized_name='roseselsa',"
+            "official_domains='[\"roseselsa.com\"]'::jsonb",
+        )
+        execute(
+            connection,
+            "UPDATE product_models SET model_code='CERAMICS Ultra',"
+            "normalized_model_code='ceramics ultra'",
+        )
+    monkeypatch.setenv("MODEL_PROVIDER", "dashscope")
+    settings.cache_clear()
+    monkeypatch.setattr(
+        SearchGateway,
+        "search",
+        lambda *_: (
+            []
+            if search_mode in {"empty", "product_to_search", "product_to_collection"}
+            else [
+                {
+                    "url": "https://global.roseselsa.com/broken/ceramics-ultra.pdf"
+                    if search_mode == "broken_exact"
+                    else "https://global.roseselsa.com/redirect/ceramics-ultra",
+                    "title": "Manual",
+                }
+            ]
+        ),
+    )
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if "/broken/" in url:
+            raise DomainError(502, "UPSTREAM_SEARCH_ERROR", "Download failed")
+        if url in {
+            "https://global.roseselsa.com/",
+            "https://global.roseselsa.com/redirect/ceramics-ultra",
+        }:
+            return (
+                "https://global.roseselsa.com/",
+                "text/html",
+                b'<h1>CERAMICS Ultra CN</h1><a href="/products/ceramics-ultra">CERAMICS Ultra</a>'
+                b'<a href="/search?q=ceramics-ultra">Support</a>'
+                b'<a href="/pages/support?model=ceramics-ultra">Support</a>',
+            )
+        if url.endswith("/pages/downloads"):
+            return url, "text/html", b"<h1>Downloads</h1>"
+        if "?" in url:
+            return url, "text/html", b"<h1>Product list</h1>CERAMICS Ultra CN Other products"
+        if url.endswith("/products/ceramics-ultra"):
+            if search_mode in {"product_to_search", "product_to_collection"}:
+                final = (
+                    "https://global.roseselsa.com/search?q=ceramics-ultra"
+                    if search_mode == "product_to_search"
+                    else "https://global.roseselsa.com/collections/ceramics-ultra"
+                )
+                return (
+                    final,
+                    "text/html",
+                    b"<h1>List</h1>CERAMICS Ultra CN Other products"
+                    b'<a href="/files/ceramics-ultra.pdf">Manual</a>',
+                )
+            return (
+                url,
+                "text/html",
+                b'<h1>CERAMICS Ultra CN</h1><a href="/support/ceramics-ultra">Manual support</a>',
+            )
+        if url.endswith("/support/ceramics-ultra"):
+            return url, "text/html", b'<a href="/files/ceramics-ultra.pdf">Manual</a>'
+        assert url.endswith("/files/ceramics-ultra.pdf")
+        return (
+            url,
+            "application/pdf",
+            pdf_bytes(
+                None, "", text=b"CERAMICS Ultra CN Official manual. Hold power for 3 seconds."
+            ),
+        )
+
+    monkeypatch.setattr(knowledge, "fetch_public", fetch)
+    monkeypatch.setattr(
+        ModelGateway, "embed", lambda _s, texts, _u: [[1.0] + [0.0] * 1023 for _ in texts]
+    )
+    assert run_once(UUID(product["knowledgeJobId"]))
+    assert "https://global.roseselsa.com/files/ceramics-ultra.pdf" in calls
+    assert client.get(f"/api/v1/me/products/{product['id']}").json()["knowledgeStatus"] == "ready"
+    with transaction() as connection:
+        assert (
+            one(
+                connection,
+                "SELECT count(*) AS n FROM knowledge_chunks k JOIN document_versions v "
+                "ON v.id=k.document_version_id JOIN documents d ON d.id=v.document_id "
+                "JOIN sources s ON s.id=d.source_id WHERE s.url='https://global.roseselsa.com/'",
+            )["n"]
+            == 0
+        )
+        assert (
+            one(
+                connection,
+                "SELECT count(*) AS n FROM knowledge_chunks k JOIN document_versions v "
+                "ON v.id=k.document_version_id JOIN documents d ON d.id=v.document_id "
+                "JOIN sources s ON s.id=d.source_id "
+                "WHERE s.url LIKE '%?%' OR s.url LIKE '%/collections/%'",
+            )["n"]
+            == 0
+        )
+        assert (
+            one(
+                connection,
+                "SELECT count(*) AS n FROM knowledge_chunks k JOIN document_versions v "
+                "ON v.id=k.document_version_id WHERE v.mime_type='application/pdf' "
+                "AND k.verification_status='verified' AND k.embedding IS NOT NULL",
+            )["n"]
+            > 0
+        )
+
+
 def test_ten_search_seeds_still_allow_a_support_page_to_reach_its_pdf(client, monkeypatch):
     from tests.test_parser import pdf_bytes
 

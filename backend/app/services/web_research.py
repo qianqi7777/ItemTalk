@@ -14,6 +14,7 @@ from app.adapters import SearchGateway
 from app.deadlines import request_scope
 from app.errors import DomainError
 from app.fetch import fetch_public
+from app.manufacturers import BRANDS
 from app.parser import parse_document
 from app.safety import risk_of
 from app.security import normalize
@@ -22,12 +23,6 @@ from app.services.source_discovery import allowed_url
 
 # Reviewed public manufacturer identities, shared by every model of these brands.
 # This metadata is only provenance for this research path, never a database trust grant.
-BRANDS = (
-    (("迈从", "mchose"), ("maicong.cn", "mchose.com.cn", "mchose.store")),
-    (("漫步者", "edifier", "hecate"), ("edifier.com", "edifier.com.cn", "hecategaming.com")),
-    (("索尼", "sony"), ("sony.com", "sony.com.cn", "sony.net")),
-    (("罗技", "logitech", "logi"), ("logitech.com", "logitech.com.cn", "logi.com")),
-)
 TOPICS = (
     (r"蓝牙|bluetooth|配对|pair", "蓝牙配对", r"蓝牙|bluetooth|配对|pair"),
     (r"dpi|灵敏度|指针|pointer|sensitivity", "DPI 指针灵敏度设置", r"dpi|灵敏度|指针|sensitivity"),

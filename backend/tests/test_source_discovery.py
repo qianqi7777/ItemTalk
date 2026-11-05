@@ -6,6 +6,83 @@ from app.errors import DomainError
 from app.services.source_discovery import discover_candidates, manual_links
 
 
+def test_reviewed_manufacturer_entry_pages_survive_search_misses():
+    model = {
+        "brand_name": "ROSESELSA",
+        "model_code": "CERAMICS Ultra",
+        "region": None,
+        "official_domains": ["roseselsa.com", "rosetechnic.com", "rosetechnics.com"],
+    }
+    rows = discover_candidates(model, [], lambda query: [])
+    assert any(row["url"] == "https://global.roseselsa.com/" for row in rows)
+    assert all(row.get("discoveryOnly") is True for row in rows)
+    assert not discover_candidates({**model, "official_domains": []}, [], lambda query: [])
+    assert not discover_candidates({**model, "brand_name": "Unknown"}, [], lambda query: [])
+
+
+def test_reviewed_entry_does_not_displace_exact_manual_or_registered_source():
+    model = {
+        "brand_name": "ROSESELSA",
+        "model_code": "CERAMICS Ultra",
+        "region": None,
+        "official_domains": ["roseselsa.com"],
+    }
+    known = {"url": "https://global.roseselsa.com/files/CERAMICS-Ultra.pdf", "title": "Manual"}
+    assert discover_candidates(model, [known], lambda query: []) == [known]
+
+
+def test_search_or_registry_cannot_remove_entry_navigation_marker():
+    model = {
+        "brand_name": "ROSESELSA",
+        "model_code": "CERAMICS Ultra",
+        "region": None,
+        "official_domains": ["roseselsa.com"],
+    }
+    for source in ([], [{"url": "https://global.roseselsa.com/", "title": "ROSESELSA"}]):
+        rows = discover_candidates(
+            model,
+            source,
+            lambda query: [
+                {"url": "https://global.roseselsa.com/?model=CERAMICS-Ultra", "title": "ROSESELSA"}
+            ],
+        )
+        assert rows and all(row.get("discoveryOnly") for row in rows)
+
+
+def test_official_entry_follows_exact_product_links_without_matching_other_variants():
+    from app.services.source_discovery import support_links
+
+    html = b"""<a href="/products/ceramics-ultra-anc-tws-earbuds">CERAMICS ULTRA</a>
+        <a href="/products/ceramics-mk2">CERAMICS MK2</a>
+        <a href="/products/ceramics-ultra-pro">CERAMICS Ultra Pro</a>
+        <a href="https://evil.example/products/ceramics-ultra">CERAMICS Ultra</a>"""
+    rows = support_links(
+        "https://global.roseselsa.com/", html, ["roseselsa.com"], model_code="CERAMICS Ultra"
+    )
+    assert [row["url"] for row in rows] == [
+        "https://global.roseselsa.com/products/ceramics-ultra-anc-tws-earbuds"
+    ]
+
+
+@pytest.mark.parametrize(
+    "path,title,expected",
+    [
+        ("/support/ceramics-ultra-pro", "CERAMICS Ultra", False),
+        ("/products/ceramics-ultra-pro", "CERAMICS Ultra Manual", False),
+        ("/products/84567", "CERAMICS Ultra", True),
+        ("/pages/support?model=ceramics-ultra", "Support", False),
+        ("/collections/ceramics-ultra", "CERAMICS Ultra", False),
+    ],
+)
+def test_specific_product_path_cannot_borrow_title_from_another_variant(path, title, expected):
+    from app.services.source_discovery import model_specific_page
+
+    assert (
+        model_specific_page("https://global.roseselsa.com" + path, title, "CERAMICS Ultra")
+        is expected
+    )
+
+
 def test_official_download_page_resolves_relative_pdf_and_rejects_external_or_executable():
     links = manual_links(
         "https://brand.example/support/G3/",

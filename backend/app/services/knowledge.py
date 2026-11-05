@@ -18,7 +18,10 @@ from app.services.queue import LeaseHeartbeat, fail, fenced, finish, progress
 from app.services.source_discovery import (
     allowed_url,
     discover_candidates,
+    is_manufacturer_entry,
     manual_links,
+    manufacturer_entries,
+    model_specific_page,
     support_links,
 )
 from app.storage import Storage, immutable_key, sha256
@@ -374,7 +377,17 @@ def research(job):
     seed_count = len(results)
     for index in range(settings().search_max_results + 5):
         if index >= len(results):
-            break
+            # A precisely named search result may still be dead or unusable.
+            # The same bounded official-entry fallback applies after download failure.
+            entries = (
+                [row for row in manufacturer_entries(model) if row["url"] not in queued]
+                if not published
+                else []
+            )
+            if not entries:
+                break
+            results.extend(entries)
+            queued.update(row["url"] for row in entries)
         result = results[index]
         domains = model["official_domains"] or []
         if result["url"] in seen:
@@ -400,6 +413,21 @@ def research(job):
                 ):
                     problems.add("下载跳转到尚未核验的域名")
                     continue
+                if is_manufacturer_entry(model, url):
+                    result = {**result, "discoveryOnly": True}
+                if (
+                    result.get("modelEntry")
+                    and mime == "text/html"
+                    and not model_specific_page(url, result["title"], model["model_code"])
+                ):
+                    result = {
+                        **result,
+                        "discoveryOnly": True,
+                        # A soft redirect must not restart the entry-page hop budget.
+                        "crawlDepth": max(1, result.get("crawlDepth", 0)),
+                    }
+                seen.add(url)
+                queued.add(url)
             with transaction() as connection:
                 fenced(connection, job)
                 version = persist_document(
@@ -414,11 +442,12 @@ def research(job):
                     official_parent_version_id=linked_parent,
                     official_link_url=result["url"] if linked_parent else None,
                 )
-                execute(
-                    connection,
-                    "UPDATE document_versions SET parse_status='pending' WHERE id=:id",
-                    id=version["id"],
-                )
+                if not result.get("discoveryOnly"):
+                    execute(
+                        connection,
+                        "UPDATE document_versions SET parse_status='pending' WHERE id=:id",
+                        id=version["id"],
+                    )
             depth = result.get("crawlDepth", 0)
             if mime == "text/html" and not result.get("directPdf") and depth < 2:
                 additions = []
@@ -442,7 +471,24 @@ def research(job):
                 if depth == 0:
                     for link in support_links(url, data, domains, model_code=model["model_code"]):
                         if link["url"] not in queued:
-                            additions.append({**link, "crawlDepth": 1})
+                            model_page = bool(
+                                result.get("discoveryOnly")
+                                and model_specific_page(
+                                    link["url"], link["title"], model["model_code"]
+                                )
+                            )
+                            additions.append(
+                                {
+                                    **link,
+                                    # A fixed entry page precedes the existing bounded
+                                    # product -> support -> manual traversal.
+                                    "crawlDepth": 0 if model_page else 1,
+                                    "modelEntry": model_page,
+                                    "discoveryOnly": bool(
+                                        result.get("discoveryOnly") and not model_page
+                                    ),
+                                }
+                            )
                             queued.add(link["url"])
                 # Give every search seed a turn before expanding navigation/download links.
                 # A generic regional support page must not consume the whole fetch budget.
@@ -451,6 +497,10 @@ def research(job):
                 else:
                     # Once seeds had their turn, finish a support-page chain within the budget.
                     results[index + 1 : index + 1] = additions
+            if result.get("discoveryOnly"):
+                # Navigation may list many models; a mention is not applicability.
+                # Keep its immutable bytes for linked-PDF provenance, not knowledge.
+                continue
             payload = {
                 "productModelId": str(model_id),
                 "documentVersionId": str(version["id"]),
