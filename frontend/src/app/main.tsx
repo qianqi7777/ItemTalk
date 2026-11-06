@@ -19,6 +19,7 @@ import { HomePage } from '../pages/HomePage';
 import { HistoryPage } from '../pages/HistoryPage';
 import { ConversationPage } from '../pages/ConversationPage';
 import './styles.css';
+import './glass.css';
 
 const AdminPanel = lazy(() =>
   import('../features/admin/AdminPanel').then((module) => ({
@@ -102,13 +103,13 @@ createRoot(document.getElementById('root')!).render(
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: '#1D6252',
+          colorPrimary: '#176b79',
           colorSuccess: '#247451',
           colorWarning: '#B45309',
           colorError: '#DC2626',
-          colorTextBase: '#203D34',
-          colorBgLayout: '#F4F5F0',
-          colorBorder: '#DCE4DA',
+          colorTextBase: '#20282e',
+          colorBgLayout: '#f4f7f8',
+          colorBorder: '#e2e8ec',
           borderRadius: 12,
           fontSize: 14,
           fontFamily:

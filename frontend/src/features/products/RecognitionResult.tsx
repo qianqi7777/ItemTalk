@@ -27,6 +27,51 @@ export function RecognitionResult({
 }) {
   const processing = ['queued', 'processing'].includes(attempt.status);
   const finalRound = (attempt.roundNo ?? 1) >= (attempt.maxRounds ?? 4);
+  if (processing) {
+    const order = ['observing', 'finding_candidates', 'comparing'];
+    const current = order.indexOf(attempt.progress?.stage ?? '');
+    return (
+      <section
+        className="recognition-processing"
+        aria-label="识别进度"
+        aria-live="polite"
+      >
+        <div className="processing-title">
+          <Spin size="small" />
+          <h2>
+            {stages[attempt.progress?.stage ?? ''] ??
+              '任务已排队，等待开始识别…'}
+          </h2>
+        </div>
+        <p>结果将在这里出现，无需再次提交照片。</p>
+        <ol>
+          {['观察物品外观', '查找相近产品资料', '综合照片与参考资料比较'].map(
+            (label, index) => (
+              <li
+                key={label}
+                data-state={
+                  current === index
+                    ? 'active'
+                    : current > index
+                      ? 'done'
+                      : 'pending'
+                }
+              >
+                <span aria-hidden="true">
+                  {current > index ? '✓' : index + 1}
+                </span>
+                {label}
+              </li>
+            ),
+          )}
+        </ol>
+        <small>
+          第 {attempt.roundNo ?? 1} / {attempt.maxRounds ?? 4} 轮 ·
+          最终型号由你确认
+        </small>
+      </section>
+    );
+  }
   const actions = (
     <Space wrap className="recognition-secondary-actions">
       <Button disabled={busy || finalRound} onClick={onAddPhotos}>

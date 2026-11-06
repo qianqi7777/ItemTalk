@@ -318,6 +318,19 @@ test('键盘仅缩小visualViewport时仍可发送，收起后恢复', async ({ 
   });
   await withinTaskViewport(page, '.chat-composer');
   await withinTaskViewport(page, '.messages');
+  await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
+  await expect(async () => {
+    const sheet = await page
+      .getByRole('dialog', { name: '设备工具' })
+      .boundingBox();
+    expect(sheet!.y).toBeGreaterThanOrEqual(0);
+    expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(360);
+  }).toPass();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '设备工具' })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }),
+  ).toBeFocused();
   await page.evaluate(() => {
     Object.defineProperty(window.visualViewport!, 'offsetTop', {
       value: 250,
@@ -453,7 +466,7 @@ test('失败资料保留原因和重试，聊天与工具切换保留草稿', as
   await page.getByText('查看失败原因', { exact: true }).click();
   await withinTaskViewport(page, '.chat-composer');
   await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
-  await page.getByRole('button', { name: '使用说明书', exact: true }).click();
+  await page.getByRole('button', { name: '打开资料', exact: true }).click();
   await expect(page.getByRole('heading', { name: '充电与电池' })).toBeVisible();
   await page.getByRole('button', { name: '返回设备聊天' }).click();
   await expect(page.getByLabel('提问内容')).toHaveValue('仍然保留的问题');
@@ -476,12 +489,19 @@ async function withinTaskViewport(page: Page, selector: string) {
   await expect(async () => {
     const target = await page.locator(selector).boundingBox();
     const nav = await page
-      .getByRole('navigation', { name: '移动页面导航' })
+      .getByRole('navigation', { name: '移动页面导航', includeHidden: true })
       .boundingBox();
     const topbar = await page.locator('.topbar').boundingBox();
     expect(target).not.toBeNull();
     expect(target!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height);
-    expect(target!.y + target!.height).toBeLessThanOrEqual(nav!.y);
+    const viewportBottom = await page.evaluate(
+      () =>
+        (window.visualViewport?.offsetTop ?? 0) +
+        (window.visualViewport?.height ?? innerHeight),
+    );
+    expect(target!.y + target!.height).toBeLessThanOrEqual(
+      nav?.y ?? viewportBottom,
+    );
     expect(target!.x).toBeGreaterThanOrEqual(0);
     expect(target!.x + target!.width).toBeLessThanOrEqual(
       page.viewportSize()!.width,
@@ -585,7 +605,10 @@ for (const width of [320, 390, 1440]) {
     );
     expect(identify!.y + identify!.height).toBeLessThan(card!.y + card!.height);
     if (width < 800) {
-      const mobile = page.getByRole('navigation', { name: '移动页面导航' });
+      const mobile = page.getByRole('navigation', {
+        name: '移动页面导航',
+        includeHidden: true,
+      });
       await expect(mobile).toBeVisible();
       await expect(
         mobile.getByRole('link', { name: '设备工作区' }),
@@ -639,6 +662,64 @@ for (const width of [320, 390, 1440]) {
   });
 }
 
+test('桌面大量历史会话在面板内滚动且不挤走输入区', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await fixture(page, { product: true, admin: false });
+  await page.route('**/api/v1/conversations?*', (route) =>
+    route.fulfill({
+      json: {
+        items: Array.from({ length: 30 }, (_, i) => ({
+          id: `history-${i}`,
+          title: `设备会话 ${i + 1}`,
+          userProductInstanceId: product.id,
+          createdAt: '2026-11-06T00:00:00Z',
+          updatedAt: '2026-11-06T00:00:00Z',
+        })),
+        nextCursor: null,
+      },
+    }),
+  );
+  await page.goto('/');
+  await page.getByRole('button', { name: '历史会话', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: /设备会话 30/ }),
+  ).toBeAttached();
+  const box = await page.locator('.chat-composer').boundingBox();
+  expect(box!.y + box!.height).toBeLessThanOrEqual(900);
+  await page
+    .getByRole('button', { name: /设备会话 30/ })
+    .scrollIntoViewIfNeeded();
+  await expect(
+    page.getByRole('button', { name: /设备会话 30/ }),
+  ).toBeInViewport();
+});
+
+test('桌面模块保留草稿并按需展开资料右栏', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await fixture(page, { product: true, admin: false });
+  await page.goto('/');
+  await page.getByLabel('提问内容').fill('切换模块后仍保留');
+  await page.getByRole('button', { name: '资料', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '充电与电池' })).toBeVisible();
+  await page.getByRole('button', { name: '记忆', exact: true }).click();
+  await expect(page.getByText('偏好简短的中文操作说明。')).toBeVisible();
+  await page.getByRole('button', { name: '聊天', exact: true }).click();
+  await expect(page.getByLabel('提问内容')).toHaveValue('切换模块后仍保留');
+  await expect(
+    page.getByRole('complementary', { name: '当前回答资料来源' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '收起资料来源' }).click();
+  await expect(
+    page.getByRole('complementary', { name: '当前回答资料来源' }),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: '展开资料来源' }).click();
+  await fits(page);
+  await page.screenshot({
+    path: 'test-results/ui-refresh/glass-desktop.png',
+    animations: 'disabled',
+  });
+});
+
 test('手机设备工具、输入区与账号抽屉', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await fixture(page, { product: true, speech: true });
@@ -657,7 +738,7 @@ test('手机设备工具、输入区与账号抽屉', async ({ page }) => {
     animations: 'disabled',
   });
   await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
-  await page.getByRole('button', { name: '使用说明书', exact: true }).click();
+  await page.getByRole('button', { name: '打开资料', exact: true }).click();
   await expect(page.getByRole('heading', { name: '充电与电池' })).toBeVisible();
   await expect(page.getByText('已核验来源', { exact: true })).toBeVisible();
   await fits(page);
@@ -666,10 +747,11 @@ test('手机设备工具、输入区与账号抽屉', async ({ page }) => {
     fullPage: true,
     animations: 'disabled',
   });
-  await page.getByRole('button', { name: '使用说明书', exact: true }).click();
-  await page.getByRole('button', { name: '我的记忆', exact: true }).click();
+  await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
+  await page.getByRole('button', { name: '打开记忆', exact: true }).click();
   await expect(page.getByText('偏好简短的中文操作说明。')).toBeVisible();
-  await page.getByRole('button', { name: '操作引导', exact: true }).click();
+  await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
+  await page.getByRole('button', { name: '打开操作引导', exact: true }).click();
   await page.getByLabel('你想完成什么操作？').fill('开始充电');
   await page.getByRole('button', { name: '开始引导', exact: true }).click();
   await expect(
@@ -686,7 +768,7 @@ test('手机设备工具、输入区与账号抽屉', async ({ page }) => {
   await page.getByLabel('提问内容').scrollIntoViewIfNeeded();
   const composer = await page.locator('.chat-composer').boundingBox();
   const navigation = await page
-    .getByRole('navigation', { name: '移动页面导航' })
+    .getByRole('navigation', { name: '移动页面导航', includeHidden: true })
     .boundingBox();
   expect(composer!.y + composer!.height).toBeLessThanOrEqual(navigation!.y);
   await fits(page);

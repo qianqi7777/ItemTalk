@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Select } from 'antd';
+import { Alert, Button, Drawer, Input, Select } from 'antd';
 import {
   Camera,
   Check,
@@ -23,19 +23,15 @@ import { RecognitionResult } from '../features/products/RecognitionResult';
 import { useSession } from '../stores/session';
 import { KnowledgeProgress } from '../features/products/KnowledgeProgress';
 import { usePolling } from '../hooks/usePolling';
-import { ChatPanel } from './ChatPanel';
 import { DeviceScene } from '../components/DeviceScene';
-import { ManualPanel } from '../features/manuals/ManualPanel';
-import { MemoryPanel } from '../features/memories/MemoryPanel';
-import { GuidancePanel } from '../features/guidance/GuidancePanel';
 import { DeleteAction } from '../components/DeleteAction';
+import { DeviceWorkbench } from '../features/products/DeviceWorkbench';
 import { useCompactWorkspace } from '../hooks/useCompactWorkspace';
 
 export function HomePage() {
   const compact = useCompactWorkspace();
   const [supplementOpen, setSupplementOpen] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [photos, setPhotos] = useState<Asset[]>([]);
   const [discardedPhotos, setDiscardedPhotos] = useState<string[]>([]);
@@ -125,7 +121,6 @@ export function HomePage() {
     setProduct(value);
     setJob(undefined);
     setManagementOpen(false);
-    setToolsOpen(false);
     // Terminal tasks are not polled; load their reason when selecting/restoring.
     if (
       !value?.knowledgeJobId ||
@@ -375,12 +370,67 @@ export function HomePage() {
     setSupplementOpen(false);
     setError('');
   };
+  const productActions = product && (
+    <div className="product-actions">
+      {product && (
+        <Button
+          onClick={restartIdentification}
+          disabled={busy || chatBusy || guidanceBusy}
+        >
+          重新识别
+        </Button>
+      )}
+      <DeleteAction
+        path={`/me/products/${product.id}`}
+        label="删除产品"
+        explanation="该产品的会话、记忆和操作引导将删除。仍被其他资料引用的照片和公共资料会保留。"
+        disabled={busy || chatBusy || guidanceBusy}
+        onBusyChange={setBusy}
+        onDeleted={() => {
+          const remaining = products.filter((item) => item.id !== product.id);
+          setProducts(remaining);
+          selectProduct(remaining[0]);
+          setPhotos([]);
+          setDiscardedPhotos([]);
+          setRejectedCandidates([]);
+          rememberRejections();
+          rememberAttempt(undefined);
+          recognitionRevision.current++;
+          setJob(undefined);
+          setInput('');
+          setError('');
+        }}
+      />
+      {products.length > 1 && (
+        <Select
+          aria-label="切换产品"
+          value={product.id}
+          disabled={busy || chatBusy || guidanceBusy}
+          options={products.map((item) => ({
+            value: item.id,
+            label: `${item.nickname || item.modelCode} · ${item.brandName}`,
+          }))}
+          onChange={(id) => {
+            selectProduct(products.find((item) => item.id === id));
+            setJob(undefined);
+            setError('');
+          }}
+        />
+      )}
+      <span>
+        <ShieldCheck size={16} aria-hidden="true" />
+        {product.identityStatus === 'verified'
+          ? '型号已核验'
+          : '型号待来源核验'}
+      </span>
+    </div>
+  );
   return (
     <main
       className={`workspace task-workspace ${product ? 'task-chat' : attempt ? 'task-candidates' : 'task-capture'} ${attempt && supplementOpen ? 'is-supplementing' : ''} ${manual ? 'is-manual' : ''}`}
       id="workspace"
     >
-      <header className="page-heading task-marketing">
+      <header className="page-heading task-marketing" hidden={Boolean(product)}>
         <div>
           <span className="eyebrow">设备工作区 / DEVICE WORKSPACE</span>
           <h1>
@@ -462,66 +512,25 @@ export function HomePage() {
             <Button
               className="device-menu-button"
               aria-expanded={managementOpen}
-              onClick={() => setManagementOpen(!managementOpen)}
+              onClick={() => setManagementOpen(true)}
             >
               设备管理
             </Button>
           )}
-          <div className="product-actions" hidden={compact && !managementOpen}>
-            {compact && (
-              <Button
-                onClick={restartIdentification}
-                disabled={busy || chatBusy || guidanceBusy}
-              >
-                重新识别
-              </Button>
-            )}
-            <DeleteAction
-              path={`/me/products/${product.id}`}
-              label="删除产品"
-              explanation="该产品的会话、记忆和操作引导将删除。仍被其他资料引用的照片和公共资料会保留。"
-              disabled={busy || chatBusy || guidanceBusy}
-              onBusyChange={setBusy}
-              onDeleted={() => {
-                const remaining = products.filter(
-                  (item) => item.id !== product.id,
-                );
-                setProducts(remaining);
-                selectProduct(remaining[0]);
-                setPhotos([]);
-                setDiscardedPhotos([]);
-                setRejectedCandidates([]);
-                rememberRejections();
-                rememberAttempt(undefined);
-                recognitionRevision.current++;
-                setJob(undefined);
-                setInput('');
-                setError('');
-              }}
-            />
-            {products.length > 1 && (
-              <Select
-                aria-label="切换产品"
-                value={product.id}
-                disabled={busy || chatBusy || guidanceBusy}
-                options={products.map((item) => ({
-                  value: item.id,
-                  label: `${item.nickname || item.modelCode} · ${item.brandName}`,
-                }))}
-                onChange={(id) => {
-                  selectProduct(products.find((item) => item.id === id));
-                  setJob(undefined);
-                  setError('');
-                }}
-              />
-            )}
-            <span>
-              <ShieldCheck size={16} aria-hidden="true" />
-              {product.identityStatus === 'verified'
-                ? '型号已核验'
-                : '型号待来源核验'}
-            </span>
-          </div>
+          {compact ? (
+            <Drawer
+              title="设备管理"
+              placement="bottom"
+              size={420}
+              open={managementOpen}
+              onClose={() => setManagementOpen(false)}
+              rootClassName="glass-sheet"
+            >
+              {productActions}
+            </Drawer>
+          ) : (
+            productActions
+          )}
           {['failed', 'partial', 'supplemental_ready'].includes(
             product.knowledgeStatus,
           ) && (
@@ -767,33 +776,13 @@ export function HomePage() {
         </div>
       )}
       {product ? (
-        <div key={product.id} className="product-workbench">
-          {compact && (
-            <Button
-              className="tools-toggle"
-              aria-expanded={toolsOpen}
-              onClick={() => setToolsOpen(!toolsOpen)}
-            >
-              {toolsOpen ? '返回设备聊天' : '说明书 · 记忆 · 操作引导'}
-            </Button>
-          )}
-          <div
-            className="product-tools"
-            aria-label="设备资料与工具"
-            hidden={compact && !toolsOpen}
-          >
-            <ManualPanel product={product} />
-            <MemoryPanel instanceId={product.id} />
-            <GuidancePanel product={product} onBusyChange={setGuidanceBusy} />
-          </div>
-          <div className="workspace-chat" hidden={compact && toolsOpen}>
-            <ChatPanel
-              product={product}
-              onBusyChange={setChatBusy}
-              compact={compact}
-            />
-          </div>
-        </div>
+        <DeviceWorkbench
+          key={product.id}
+          product={product}
+          compact={compact}
+          onChatBusyChange={setChatBusy}
+          onGuidanceBusyChange={setGuidanceBusy}
+        />
       ) : (
         <div className="how-it-works">
           <div>

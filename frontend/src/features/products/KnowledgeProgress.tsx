@@ -1,4 +1,4 @@
-import { Alert, Progress, Tag } from 'antd';
+import { Alert, Progress, Spin, Tag } from 'antd';
 import type { Job, ProductInstance } from '../../types/api';
 
 const knowledgeLabels: Record<string, string> = {
@@ -47,9 +47,12 @@ export function KnowledgeProgress({
         'partial',
         'failed',
         'not_requested',
-      ].includes(product.knowledgeStatus) && (
-        <Progress percent={job?.progress.percent || 0} status="active" />
-      )}
+      ].includes(product.knowledgeStatus) &&
+        (typeof job?.progress.percent === 'number' ? (
+          <Progress percent={job.progress.percent} status="active" />
+        ) : (
+          <Spin size="small" aria-label="正在准备资料" />
+        ))}
       {job?.lastError &&
         (compact ? (
           <details className="knowledge-error">
