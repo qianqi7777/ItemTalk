@@ -1,15 +1,39 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Button, Spin } from 'antd';
 import { Brain } from 'lucide-react';
 import { api, post } from '../../services/api';
 import type { Memory } from '../../types/api';
 
-export function MemoryPanel({ instanceId }: { instanceId: string }) {
+export function MemoryPanel({
+  instanceId,
+  embedded = false,
+}: {
+  instanceId: string;
+  embedded?: boolean;
+}) {
   // 面板展示当前产品设置和本人全局偏好，打开/刷新都不会自动确认候选。
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(embedded);
   const [items, setItems] = useState<Memory[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(embedded);
   const [error, setError] = useState('');
+  useEffect(() => {
+    if (!embedded) return;
+    let active = true;
+    void api<{ items: Memory[] }>(`/me/memories?instanceId=${instanceId}`)
+      .then((page) => {
+        if (active) setItems(page.items);
+      })
+      .catch((error: unknown) => {
+        if (active)
+          setError(error instanceof Error ? error.message : '记忆加载失败');
+      })
+      .finally(() => {
+        if (active) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [embedded, instanceId]);
   const load = async () => {
     const page = await api<{ items: Memory[] }>(
       `/me/memories?instanceId=${instanceId}`,
@@ -30,6 +54,7 @@ export function MemoryPanel({ instanceId }: { instanceId: string }) {
   return (
     <section className="memory-panel">
       <Button
+        hidden={embedded}
         aria-expanded={open}
         disabled={busy}
         icon={<Brain size={16} aria-hidden="true" />}

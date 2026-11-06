@@ -35,9 +35,14 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   await expect(page.getByLabel('待发送图片')).toBeVisible();
   await page.getByLabel('提问内容').fill('如何开机？');
   await page.getByRole('button', { name: '发送问题' }).click();
-  await expect(page.getByText('已核验来源')).toBeVisible();
+  await expect(page.locator('.messages').getByText('已核验来源')).toBeVisible();
+  await expect(
+    page
+      .getByRole('complementary', { name: '当前回答资料来源' })
+      .getByText('已核验来源'),
+  ).toBeVisible();
   await expect(page.getByText(/长按电源键 3 秒开机/)).toBeVisible();
-  await expect(page.getByText(/第 1 页/)).toBeVisible();
+  await expect(page.locator('.messages').getByText(/第 1 页/)).toBeVisible();
   await expect(page.locator('.bubble.user img')).toHaveCount(1);
   await page.screenshot({
     path: 'test-results/v1-chat-image-desktop.png',
@@ -82,13 +87,14 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     page.getByText('此操作存在安全风险，请停止操作并联系官方售后或专业人员。'),
   ).toBeVisible();
   await expect(page.getByLabel('待发送图片')).toHaveCount(0);
-  await page.getByRole('button', { name: '使用说明书' }).click();
+  await page.getByRole('button', { name: '资料', exact: true }).click();
   await expect(page.getByRole('heading', { name: '产品概览' })).toBeVisible({
     timeout: 30000,
   });
   await expect(
     page.locator('.manual-content').getByText('已核验来源').first(),
   ).toBeVisible();
+  await page.getByRole('button', { name: '聊天', exact: true }).click();
   await page.getByRole('button', { name: '新建会话' }).click();
   await page.getByRole('button', { name: '历史会话' }).click();
   await page.getByRole('button', { name: '如何开机？', exact: true }).click();
@@ -100,7 +106,7 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   await page.getByLabel('提问内容').fill('请记住我喜欢简短中文，如何开机？');
   await page.getByRole('button', { name: '发送问题' }).click();
   await expect(page.getByRole('button', { name: '发送问题' })).toBeVisible();
-  await page.getByRole('button', { name: '我的记忆' }).click();
+  await page.getByRole('button', { name: '记忆', exact: true }).click();
   await expect(async () => {
     if (!(await page.getByRole('button', { name: '确认记住' }).count()))
       await page.getByRole('button', { name: '刷新记忆' }).click();
@@ -108,16 +114,19 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   }).toPass({ timeout: 15000 });
   await page.getByRole('button', { name: '确认记住' }).click();
   await expect(page.getByText('全局偏好 · 已确认')).toBeVisible();
+  await page.getByRole('button', { name: '聊天', exact: true }).click();
   await page
     .getByLabel('提问内容')
     .fill('请记住当前产品开启节能模式，如何开机？');
   await page.getByRole('button', { name: '发送问题' }).click();
+  await page.getByRole('button', { name: '记忆', exact: true }).click();
   await expect(async () => {
     await page.getByRole('button', { name: '刷新记忆' }).click();
     await expect(page.getByRole('button', { name: '确认记住' })).toBeVisible();
   }).toPass({ timeout: 15000 });
   await page.getByRole('button', { name: '确认记住' }).click();
   await expect(page.getByText('当前产品 · 已确认')).toBeVisible();
+  await page.getByRole('button', { name: '资料', exact: true }).click();
   await page
     .getByRole('button', { name: '生成我的说明书', exact: true })
     .click();
@@ -131,9 +140,6 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page
-    .getByRole('button', { name: '说明书 · 记忆 · 操作引导', exact: true })
-    .click();
   await expect(page.getByLabel('本章个人补充')).toBeVisible();
   await page.screenshot({
     path: 'test-results/v1-personal-manual-mobile.png',
@@ -145,6 +151,7 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
   await expect(page.getByLabel('已确认的个人设置')).toHaveCount(0);
   await page.getByRole('button', { name: '我的说明书', exact: true }).click();
   await expect(page.getByLabel('本章个人补充')).toBeVisible();
+  await page.getByRole('button', { name: '记忆', exact: true }).click();
   while (
     await page.getByRole('button', { name: '删除记忆', exact: true }).count()
   ) {
@@ -184,9 +191,6 @@ test('注册、上传、确认、资料构建与带引用问答', async ({ page 
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page
-    .getByRole('button', { name: '说明书 · 记忆 · 操作引导', exact: true })
-    .click();
   await expect(page.getByText('当前步骤 2')).toBeVisible();
   await page.screenshot({
     path: 'test-results/v1-guidance-mobile.png',

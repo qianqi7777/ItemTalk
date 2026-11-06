@@ -15,6 +15,7 @@ import {
 import type { User } from '../types/api';
 import { Brand } from './Brand';
 import { DeleteAction } from './DeleteAction';
+import { useCompactWorkspace } from '../hooks/useCompactWorkspace';
 
 /** 导航只改变展示入口；管理员权限仍由capabilities和每次服务端请求共同校验。 */
 export function AppShell({
@@ -31,6 +32,7 @@ export function AppShell({
   children: ReactNode;
 }) {
   const [accountOpen, setAccountOpen] = useState(false);
+  const compact = useCompactWorkspace(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState('');
   const { pathname } = useLocation();
@@ -62,7 +64,7 @@ export function AppShell({
       </a>
       <aside className="sidebar">
         <NavLink className="brand-home" to="/" aria-label="识物说首页">
-          <Brand inverted />
+          <Brand />
         </NavLink>
         <span className="nav-label">工作空间</span>
         <nav className="desktop-nav" aria-label="主导航">
@@ -88,7 +90,7 @@ export function AppShell({
             </NavLink>
           )}
         </nav>
-        <div className="sidebar-journey">
+        <div className="sidebar-journey" hidden>
           <span className="nav-label">
             {management ? '管理范围' : '从照片，到答案'}
           </span>
@@ -104,7 +106,7 @@ export function AppShell({
             ))}
           </ol>
         </div>
-        <div className="sidebar-bottom">
+        <div className="sidebar-bottom" hidden>
           <ShieldCheck size={23} aria-hidden="true" />
           <strong>
             {management ? '只看运行，不看隐私。' : '好答案，有据可查。'}
@@ -186,10 +188,11 @@ export function AppShell({
       </nav>
       <Drawer
         title="账号与隐私"
+        placement={compact ? 'bottom' : 'right'}
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
         size={360}
-        rootClassName="account-drawer"
+        rootClassName="account-drawer glass-sheet"
       >
         {accountError && (
           <Alert title={accountError} type="error" role="alert" />

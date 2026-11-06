@@ -8,11 +8,13 @@ import type { Asset, Guidance, ProductInstance } from '../../types/api';
 export function GuidancePanel({
   product,
   onBusyChange,
+  embedded = false,
 }: {
   product: ProductInstance;
   onBusyChange?: (busy: boolean) => void;
+  embedded?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(embedded);
   const [topic, setTopic] = useState('');
   const [session, setSession] = useState<Guidance>();
   const [history, setHistory] = useState<Guidance[]>([]);
@@ -21,6 +23,23 @@ export function GuidancePanel({
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  useEffect(() => {
+    if (!embedded) return;
+    let active = true;
+    void api<{ items: Guidance[] }>(
+      `/guidance-sessions?instanceId=${product.id}`,
+    )
+      .then((page) => {
+        if (active) setHistory(page.items);
+      })
+      .catch((error: unknown) => {
+        if (active)
+          setError(error instanceof Error ? error.message : '引导加载失败');
+      });
+    return () => {
+      active = false;
+    };
+  }, [embedded, product.id]);
   useEffect(() => {
     onBusyChange?.(busy);
   }, [busy, onBusyChange]);
@@ -110,6 +129,7 @@ export function GuidancePanel({
   return (
     <section className="guidance-panel">
       <Button
+        hidden={embedded}
         aria-expanded={open}
         disabled={busy}
         icon={<Route size={16} aria-hidden="true" />}

@@ -293,7 +293,7 @@ test('手机补充资料独立于官方说明书，切换工具保留草稿并�
     page.getByRole('heading', { name: 'DEMO-100', exact: true }),
   ).toBeVisible();
   await page.getByRole('button', { name: '说明书 · 记忆 · 操作引导' }).click();
-  await page.getByRole('button', { name: '使用说明书', exact: true }).click();
+  await page.getByRole('button', { name: '打开资料', exact: true }).click();
   await expect(
     page.getByRole('link', { name: 'DEMO-100 第三方说明书' }),
   ).toHaveAttribute('href', 'https://manual.example/demo-100.pdf');

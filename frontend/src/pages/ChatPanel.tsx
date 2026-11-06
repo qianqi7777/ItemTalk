@@ -21,6 +21,7 @@ import type {
   ProductInstance,
   Run,
   Asset,
+  WebSource,
 } from '../types/api';
 import { MessageFeedback } from '../features/feedback/MessageFeedback';
 import { SpeechInput } from '../features/speech/SpeechInput';
@@ -104,12 +105,17 @@ function QuestionImages({ assets }: { assets: Asset[] }) {
 export function ChatPanel({
   product,
   onBusyChange,
+  onSourcesChange,
   initialConversation,
   onConversationChange,
   compact = false,
 }: {
   product: ProductInstance;
   onBusyChange?: (busy: boolean) => void;
+  onSourcesChange?: (sources: {
+    citations: Citation[];
+    webSources: WebSource[];
+  }) => void;
   initialConversation?: RestoredConversation;
   onConversationChange?: (id: string) => void;
   compact?: boolean;
@@ -146,6 +152,15 @@ export function ChatPanel({
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
   const [citations, setCitations] = useState<Citation[]>([]);
+  useEffect(() => {
+    const latest = [...messages]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    onSourcesChange?.({
+      citations: busy ? citations : latest?.citations || [],
+      webSources: busy ? [] : latest?.webSources || [],
+    });
+  }, [messages, citations, busy, onSourcesChange]);
   const [retryDraft, setRetryDraft] = useState<QuestionDraft>();
   const [speechEnabled, setSpeechEnabled] = useState(false);
   useEffect(() => {

@@ -78,14 +78,20 @@ function SupplementalDocuments({ product }: { product: ProductInstance }) {
   );
 }
 
-export function ManualPanel({ product }: { product: ProductInstance }) {
-  const [open, setOpen] = useState(false);
+export function ManualPanel({
+  product,
+  embedded = false,
+}: {
+  product: ProductInstance;
+  embedded?: boolean;
+}) {
+  const [open, setOpen] = useState(embedded);
   const [mode, setMode] = useState<'mine' | 'public'>('mine');
   const modeRef = useRef<'mine' | 'public'>('mine');
   const loadSequence = useRef(0);
   const [manual, setManual] = useState<Manual>();
   const [selected, setSelected] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(embedded);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState('');
   const load = useCallback(
@@ -139,6 +145,18 @@ export function ManualPanel({ product }: { product: ProductInstance }) {
       setLoading(false);
     }
   };
+  useEffect(() => {
+    if (!embedded) return;
+    let active = true;
+    void Promise.resolve()
+      .then(() => load())
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [embedded, load, product.knowledgeStatus]);
   const generate = async (
     visibility: 'public' | 'private' = manual?.visibility || 'public',
   ) => {
@@ -215,6 +233,7 @@ export function ManualPanel({ product }: { product: ProductInstance }) {
   return (
     <section className="manual-panel">
       <Button
+        hidden={embedded}
         icon={<BookOpen size={17} aria-hidden="true" />}
         onClick={() => void toggle()}
         aria-expanded={open}
