@@ -8,7 +8,7 @@ from app.adapters import ModelGateway, SearchGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError
-from app.fetch import fetch_public, public_addresses
+from app.fetch import fetch_public, public_addresses, source_cooldowns, source_throttle_events
 from app.parser import parse_document
 from app.security import normalize
 from app.services.document_extraction import extract_scanned_pages
@@ -346,6 +346,7 @@ def publish_chunk_batch(connection, model, version, chunks, vectors):
         )
 
 
+@source_cooldowns()
 def research(job):
     """研究、隔离解析、向量化分阶段推进，同一公共构建不重复请求付费服务。"""
     model_id = job["payload"]["productModelId"]
@@ -360,6 +361,20 @@ def research(job):
             id=model_id,
         )
     mock = settings().model_provider == "mock"
+    supplemental = 0
+    if not mock:
+        from app.services.supplemental_reuse import reuse
+
+        supplemental = reuse(job, model)
+        if supplemental and not job["payload"].get("refreshOfficial"):
+            with transaction() as connection:
+                finish(
+                    connection,
+                    job,
+                    "partial_success",
+                    "已复用保存的第三方说明书并建立补充索引，未经官方核验。",
+                )
+            return
     if mock:
         results = [
             {"url": "https://example.invalid/itemtalk-demo", "title": "演示设备官方资料（测试）"}
@@ -519,7 +534,9 @@ def research(job):
         except DomainError as error:
             if error.code == "SOURCE_RATE_LIMITED":
                 problems.add(error.message)
-                break  # Do not fetch another link that may redirect to this host.
+                # Every direct request/redirect to the throttled host is blocked;
+                # independent reviewed manufacturer hosts can still provide a manual.
+                continue
             if error.code not in {
                 "UPSTREAM_SEARCH_ERROR",
                 "SOURCE_UNVERIFIED",
@@ -540,8 +557,7 @@ def research(job):
         problems.add("品牌官方来源尚未核验")
     if not results:
         problems.add("暂未发现可安全读取的官方资料链接")
-    supplemental = 0
-    if not published and not mock:
+    if not published and not mock and not supplemental:
         from app.services.supplemental_research import build
 
         try:
@@ -556,6 +572,15 @@ def research(job):
         else "；".join(sorted(problems)) or "没有找到满足型号、地区和官方来源要求的资料"
     )
     with transaction() as connection:
+        for event in source_throttle_events():
+            fenced(connection, job)
+            execute(
+                connection,
+                "INSERT INTO job_events(job_id,event_type,payload) "
+                "VALUES(:j,'error',CAST(:p AS jsonb))",
+                j=job["id"],
+                p=json_value(event),
+            )
         finish(
             connection,
             job,

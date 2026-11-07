@@ -4,7 +4,9 @@ import http.client
 import ipaddress
 import socket
 import ssl
-from datetime import UTC, datetime
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -13,6 +15,37 @@ import httpx
 from app.config import settings
 from app.deadlines import bounded_call, remaining
 from app.errors import DomainError
+
+_source_limits = ContextVar("source_limits", default=None)
+
+
+@contextmanager
+def source_cooldowns():
+    """One build shares host cooldowns through direct requests and redirects."""
+    if _source_limits.get() is not None:
+        yield
+        return
+    token = _source_limits.set({})
+    try:
+        yield
+    finally:
+        _source_limits.reset(token)
+
+
+def source_throttle_events():
+    return [
+        {key: value for key, value in row.items() if key != "error"}
+        for row in (_source_limits.get() or {}).values()
+    ]
+
+
+def source_host_key(host):
+    host = (host or "").rstrip(".")
+    try:
+        return host.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        # Invalid IDNA still goes through public_addresses' controlled rejection.
+        return host.lower()
 
 
 def encrypted_public_dns(host, port, **_kwargs):
@@ -94,6 +127,10 @@ class PinnedHTTPS(http.client.HTTPSConnection):
 
 def fetch_public(url, maximum=50 * 1024 * 1024, *, accepted_mimes=None):
     for _ in range(4):
+        limits = _source_limits.get()
+        host = source_host_key(urlsplit(url).hostname)
+        if limits is not None and host in limits:
+            raise limits[host]["error"]
         parts, addresses = public_addresses(url)
         connection = PinnedHTTPS(parts.hostname, addresses[0])
         connection.timeout = remaining(15)
@@ -139,7 +176,19 @@ def fetch_public(url, maximum=50 * 1024 * 1024, *, accepted_mimes=None):
                     delay = 60
                 error = DomainError(503, "SOURCE_RATE_LIMITED", "资料网站暂时限制访问，请稍后重试")
                 error.retry_after = max(1, min(delay, 86400))
-                error.source_host = parts.hostname
+                host = source_host_key(parts.hostname)
+                error.source_host = host
+                if limits is not None:
+                    limits[host] = {
+                        "error": error,
+                        "errorCode": "SOURCE_RATE_LIMITED",
+                        "sourceHost": host,
+                        "stage": "source_download",
+                        "retryAfter": error.retry_after,
+                        "retryAt": (
+                            datetime.now(UTC) + timedelta(seconds=error.retry_after)
+                        ).isoformat(),
+                    }
                 raise error
             if response.status != 200:
                 raise DomainError(502, "UPSTREAM_SEARCH_ERROR", "资料下载失败")

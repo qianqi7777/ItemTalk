@@ -9,7 +9,7 @@ from app.adapters import ModelGateway, SearchGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
 from app.errors import DomainError
-from app.fetch import fetch_public
+from app.fetch import fetch_public, source_cooldowns
 from app.parser import parse_document
 from app.security import normalize
 from app.services.document_extraction import extract_scanned_pages
@@ -148,15 +148,9 @@ def pages_for(job, model, version, data, mime):
             v=version["id"],
         )
         if existing:
-            return [
-                (r["page_no"], r["extracted_text"])
-                for r in many(
-                    c,
-                    "SELECT page_no,extracted_text FROM document_pages WHERE "
-                    "document_version_id=:v ORDER BY page_no",
-                    v=version["id"],
-                )
-            ]
+            from app.services.supplemental_reuse import frozen_pages
+
+            return frozen_pages(c, version)
     scans = []
     parse_data = data
     if mime == "text/html":
@@ -326,6 +320,7 @@ def publish(job, model, version, pages, publisher_url):
     return True
 
 
+@source_cooldowns()
 def build(job, model):
     """Try at most six downloads and two matched documents; never replay a 429."""
     from app.services.knowledge import persist_document
@@ -333,6 +328,7 @@ def build(job, model):
     results = list(discover(model))
     seen = set()
     published = 0
+    limited = None
     for _ in range(6):
         if not results or published >= 2:
             break
@@ -398,7 +394,8 @@ def build(job, model):
                 published += 1
         except DomainError as error:
             if error.code == "SOURCE_RATE_LIMITED":
-                raise
+                limited = error
+                continue
             if error.status in {409, 429}:
                 raise
             if error.code not in {
@@ -408,4 +405,6 @@ def build(job, model):
                 "FILE_TOO_LARGE",
             }:
                 raise
+    if not published and limited:
+        raise limited
     return published
