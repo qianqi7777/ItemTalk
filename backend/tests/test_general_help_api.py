@@ -13,7 +13,7 @@ pytestmark = pytest.mark.postgres
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_empty_knowledge_gives_generic_help_and_keeps_label_after_reload(
+def test_empty_knowledge_gives_model_reference_and_keeps_label_after_reload(
     client, monkeypatch, stream
 ):
     register_login(client)
@@ -21,7 +21,7 @@ def test_empty_knowledge_gives_generic_help_and_keeps_label_after_reload(
     conversation = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
 
     def no_answer(*_args, **_kwargs):
-        pytest.fail("No evidence must not trigger product-specific answer generation")
+        pytest.fail("No evidence must not trigger cited answer generation")
 
     for method in ("embed", "answer", "answer_stream", "assess_answer", "gap_intent"):
         monkeypatch.setattr(ModelGateway, method, no_answer)
@@ -34,7 +34,8 @@ def test_empty_knowledge_gives_generic_help_and_keeps_label_after_reload(
     assert response.status_code == (200 if stream else 201)
     saved = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()["items"][-1]
     assert saved["answerBasis"] == "general" and saved["citations"] == []
-    assert "通用建议" in saved["content"] and "蓝牙设置" in saved["content"]
+    assert saved["content"].startswith("模型推测 · 未经资料核验")
+    assert saved["webLookup"]["lookupMode"] == "model_reference"
     if stream:
         tokens = []
         done = None
@@ -63,8 +64,10 @@ def test_empty_knowledge_never_invents_sensitive_model_steps(client, question):
     answer = post(
         client, f"/conversations/{conversation['id']}/messages", {"content": question}
     ).json()
-    assert answer["answerBasis"] == "insufficient"
-    assert "需要" in answer["content"] and answer["citations"] == []
+    assert answer["answerBasis"] == "general"
+    assert answer["webLookup"]["lookupMode"] == "model_reference"
+    assert "未经资料核验" in answer["content"] and answer["citations"] == []
+    assert not answer["webSources"]
 
 
 @pytest.mark.parametrize("rejection", ["insufficient", "unsupported"])
@@ -94,5 +97,6 @@ def test_irrelevant_existing_evidence_still_allows_labeled_low_risk_help(
         f"/conversations/{conversation['id']}/messages",
         {"content": "鼠标蓝牙连接不上电脑怎么办？"},
     ).json()
-    assert answer["answerBasis"] == "general" and "蓝牙设置" in answer["content"]
+    assert answer["answerBasis"] == "general" and "未经资料核验" in answer["content"]
+    assert answer["webLookup"]["lookupMode"] == "model_reference"
     assert answer["citations"] == [] and "长按" not in answer["content"]

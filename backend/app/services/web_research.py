@@ -18,7 +18,6 @@ from app.manufacturers import BRANDS
 from app.parser import parse_document
 from app.safety import risk_of
 from app.security import normalize
-from app.services.general_advice import requires_evidence
 from app.services.source_discovery import allowed_url
 
 # Reviewed public manufacturer identities, shared by every model of these brands.
@@ -93,8 +92,8 @@ def queries(model, question):
                 model.get("region"),
                 model.get("hardware_revision"),
                 sorted(model.get("blocked_urls") or []),
-                requires_evidence(question),
-                2,
+                hashlib.sha256(normalize(question).encode()).hexdigest(),
+                3,
             ],
             ensure_ascii=False,
         ).encode()
@@ -169,8 +168,9 @@ def _excerpt(text, keywords):
 
 def cache_valid(cached, query_key, domains):
     try:
-        if cached.get("lookupMode") == "supplemental_index":
-            return False  # Always revalidate the index; never revive withdrawn material.
+        if cached.get("lookupMode") in {"supplemental_index", "model_reference"}:
+            # Revalidate indexed evidence; an inference is never a web-search result.
+            return False
         age = (datetime.now(UTC) - datetime.fromisoformat(cached["searchedAt"])).total_seconds()
         if cached["queryKey"] != query_key or not 0 <= age < (
             21600 if cached["status"] == "found" else 900
@@ -204,15 +204,7 @@ def research(
         raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
     if risk_of(question) == "high":
         return {**result, "reason": "unsafe"}
-    if (
-        cached
-        and not force
-        and cache_valid(cached, key, domains)
-        and not (
-            requires_evidence(question)
-            and any(s["sourceKind"] != "official" for s in cached.get("sources", []))
-        )
-    ):
+    if cached and not force and cache_valid(cached, key, domains):
         if on_status:
             on_status("web_cached")
         return {**cached, "cached": True}
@@ -319,9 +311,6 @@ def research(
                         continue
                     if match != "matched":
                         result["reason"] = "wrong_model"
-                        continue
-                    if requires_evidence(question) and not trusted:
-                        result["reason"] = "official_required"
                         continue
                     if on_status:
                         on_status("web_verifying")

@@ -119,11 +119,13 @@ def test_matching_search_title_cannot_override_wrong_product_in_body(sources):
     assert not research()["sources"]
 
 
-def test_sensitive_steps_reject_third_party_even_when_text_matches(sources):
+def test_question_keywords_do_not_change_a_matching_page_into_an_official_only_requirement(sources):
+    _, _, rows, pages = sources
+    pages[rows[0]["url"]] = "Acme Pro100 固件更新：在官方更新应用中检查对应型号的固件版本。"
     result = web.research(
         MODEL, "如何刷固件？", user="test", cancelled=lambda: False, deadline=time.monotonic() + 40
     )
-    assert not result["sources"]
+    assert result["sources"] and result["sources"][0]["sourceKind"] == "third_party"
 
 
 def test_query_and_fetch_limits(sources):
@@ -156,6 +158,15 @@ def test_recent_cache_is_reused_but_force_searches(sources):
     assert second["cached"] and len(sources[0]) == count
     research(cached=first, force=True)
     assert len(sources[0]) > count
+
+
+def test_model_inference_history_is_not_a_cached_web_search_result(sources):
+    first = research()
+    reference = {**first, "status": "unverified", "lookupMode": "model_reference", "sources": []}
+    before = len(sources[0])
+    result = research(cached=reference)
+    assert result["status"] == "found" and result["sources"]
+    assert not result["cached"] and len(sources[0]) > before
 
 
 def test_changed_official_trust_invalidates_cache(sources):
@@ -228,7 +239,7 @@ def test_revoked_source_invalidates_cache_and_cannot_be_used(sources):
     assert not result["cached"] and not result["sources"]
 
 
-def test_cache_cannot_promote_third_party_to_sensitive_steps(sources):
+def test_a_different_question_is_researched_again_and_keeps_its_nonofficial_source_kind(sources):
     first = research()
     result = web.research(
         MODEL,
@@ -238,7 +249,8 @@ def test_cache_cannot_promote_third_party_to_sensitive_steps(sources):
         deadline=time.monotonic() + 40,
         cached=first,
     )
-    assert not result["sources"]
+    assert not result["cached"]
+    assert result["sources"] and result["sources"][0]["sourceKind"] == "third_party"
 
 
 @pytest.mark.parametrize(

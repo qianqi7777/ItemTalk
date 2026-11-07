@@ -103,7 +103,7 @@ export interface WebLookup {
   searchedAt: string;
   queryKey: string;
   cached: boolean;
-  lookupMode?: 'supplemental_index';
+  lookupMode?: 'supplemental_index' | 'model_reference';
   conflict?: { title: string; url: string };
 }
 export interface SupplementalDocument {

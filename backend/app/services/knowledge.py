@@ -585,7 +585,7 @@ def research(job):
             connection,
             job,
             "succeeded" if published else "partial_success",
-            None if published else summary + "。仍可提问并获得低风险通用帮助。",
+            None if published else summary + "。仍可提问，参考回答会明确标注资料核验状态。",
         )
         if published:
             from app.services.manuals import schedule

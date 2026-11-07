@@ -7,7 +7,6 @@ from app.db import many, one, transaction
 from app.deadlines import remaining
 from app.errors import DomainError
 from app.grounding import evidence_insufficient, grounded_answer
-from app.services.general_advice import requires_evidence
 from app.services.web_research import research
 
 
@@ -44,12 +43,19 @@ def answer_from_web(run, instance, question, gateway, cancelled, on_status=None)
     )
     from app.services.supplemental_index import lookup as indexed_lookup
 
-    lookup = (
-        indexed_lookup(model, question, gateway, run["user_id"])
-        if not run.get("force_web_search") and not requires_evidence(question)
-        else None
-    )
-    lookup = lookup or research(
+    lookup = None
+    if not run.get("force_web_search"):
+        try:
+            lookup = indexed_lookup(model, question, gateway, run["user_id"])
+        except DomainError as error:
+            if error.status in {401, 403, 409}:
+                raise
+            remaining(45)  # Recover an index-local outage, never an expired request.
+    if lookup:
+        supported = _answer_with_sources(lookup, question, gateway, run["user_id"], on_status)
+        if supported[0] or lookup.get("status") == "identity_conflict":
+            return supported
+    lookup = research(
         model,
         question,
         user=run["user_id"],
@@ -59,6 +65,10 @@ def answer_from_web(run, instance, question, gateway, cancelled, on_status=None)
         force=run.get("force_web_search", False),
         on_status=on_status,
     )
+    return _answer_with_sources(lookup, question, gateway, run["user_id"], on_status)
+
+
+def _answer_with_sources(lookup, question, gateway, subject, on_status):
     if lookup["status"] == "identity_conflict":
         title = lookup["conflict"]["title"]
         return (
@@ -72,7 +82,7 @@ def answer_from_web(run, instance, question, gateway, cancelled, on_status=None)
     try:
         if on_status:
             on_status("web_answering")
-        answer = gateway.answer(question, evidence, run["user_id"])
+        answer = gateway.answer(question, evidence, subject)
         if evidence_insufficient(answer):
             lookup.update(status="empty", reason="unsupported", sources=[])
             return None, None, lookup
@@ -85,17 +95,12 @@ def answer_from_web(run, instance, question, gateway, cancelled, on_status=None)
         if cited != {row["rank"] for row in referenced}:
             lookup.update(status="empty", reason="unsupported", sources=[])
             return None, None, lookup
-        assessment = gateway.assess_answer(question, answer, referenced, run["user_id"])
+        assessment = gateway.assess_answer(question, answer, referenced, subject)
         supported, retained = grounded_answer(answer, referenced, assessment)
         if supported is None or not retained:
             lookup.update(status="empty", reason="unsupported", sources=[])
             return None, None, lookup
         lookup["sources"] = [s for s in lookup["sources"] if s["rank"] in retained]
-        if requires_evidence(supported) and any(
-            s["sourceKind"] != "official" for s in lookup["sources"]
-        ):
-            lookup.update(status="empty", reason="official_required", sources=[])
-            return None, None, lookup
         return supported, "web", lookup
     except DomainError as error:
         if error.status == 409:

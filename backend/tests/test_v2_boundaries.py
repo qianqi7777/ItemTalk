@@ -57,14 +57,15 @@ def test_json_and_sse_refuse_unrelated_citations_without_extra_judge(client, mon
         {"content": "设备的实际地址是什么？"},
     )
     assert result.status_code == 201 and result.json()["citations"] == []
-    assert "资料不足" in result.json()["content"]
+    assert "模型推测 · 未经资料核验" in result.json()["content"]
+    assert result.json()["webLookup"]["lookupMode"] == "model_reference"
     streamed = client.post(
         f"/api/v1/conversations/{conversation['id']}/stream",
         json={"content": "设备的实际地址是什么？"},
         headers={"Idempotency-Key": str(uuid4())},
     )
     assert streamed.status_code == 200 and "event: citation" not in streamed.text
-    assert "资料不足" in streamed.text
+    assert "模型推测 · 未经资料核验" in streamed.text
     assert "这里有其他操作说明" not in streamed.text
 
 

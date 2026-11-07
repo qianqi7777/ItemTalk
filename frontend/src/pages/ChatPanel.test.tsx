@@ -93,6 +93,44 @@ test('无官方资料的产品仍可提问，历史中的通用建议保持明�
   expect(screen.getByLabelText('提问内容')).toBeEnabled();
 });
 
+test('没有资料的模型参考显示单独标识且不伪装第三方来源', () => {
+  render(
+    <ChatPanel
+      product={{ ...product, knowledgeStatus: 'partial' }}
+      initialConversation={{
+        id: 'reference-history',
+        nextCursor: null,
+        items: [
+          {
+            id: 'reference-answer',
+            role: 'assistant',
+            citations: [],
+            answerBasis: 'general',
+            content: '模型推测 · 未经资料核验\n\n针对 WH-1000XM5 的参考说明。',
+            webLookup: {
+              status: 'unverified',
+              reason: 'no_results',
+              searchedAt: '2026-11-07T00:00:00Z',
+              queryKey: 'reference',
+              cached: false,
+              lookupMode: 'model_reference',
+            },
+            webSources: [],
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getAllByText('模型推测 · 未经资料核验')).toHaveLength(1);
+  expect(screen.getByText('针对 WH-1000XM5 的参考说明。')).toBeVisible();
+  expect(
+    screen.queryByText('通用建议 · 未经该型号官方资料核验'),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText('来自第三方补充资料库 · 非官方核验'),
+  ).not.toBeInTheDocument();
+});
+
 test('恢复联网来源并强制重搜原问题，不重复追加用户输入', async () => {
   vi.mocked(streamAnswer).mockResolvedValue({
     id: 'new-run',

@@ -112,7 +112,9 @@ def test_unattributed_or_invalid_answer_never_becomes_a_verified_fact(
     )
     assert response.status_code == 201
     answer = response.json()
-    assert expected in answer["content"] and answer["citations"] == []
+    assert answer["content"].startswith("模型推测 · 未经资料核验")
+    assert answer["webLookup"]["lookupMode"] == "model_reference"
+    assert answer["citations"] == [] and not answer["webSources"]
     assert "水下使用" not in answer["content"]
 
 
@@ -137,5 +139,6 @@ def test_explicit_insufficiency_does_not_borrow_valid_citation(client, monkeypat
     )
     assert response.status_code == (200 if stream else 201)
     message = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()["items"][-1]
-    assert "现有已核验资料不足" in message["content"]
-    assert message["citations"] == []
+    assert message["content"].startswith("模型推测 · 未经资料核验")
+    assert message["citations"] == [] and not message["webSources"]
+    assert "[1]" not in message["content"]
