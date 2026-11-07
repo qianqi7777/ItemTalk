@@ -11,6 +11,7 @@ from PIL import Image
 
 from app.errors import DomainError
 from app.identification import normalized
+from app.manufacturers import reviewed_identity_aliases
 from app.security import normalize
 from app.services.web_research import BRANDS, contains, official_url
 from app.storage import sanitize_image
@@ -47,7 +48,9 @@ def thumbnail(data, mime):
 
 
 def supports_model(brand, model, text, *, trusted_brand=False):
-    aliases = APPLE_ALIASES if normalize(brand) in APPLE_ALIASES else {normalize(brand)}
+    aliases = (
+        APPLE_ALIASES if normalize(brand) in APPLE_ALIASES else reviewed_identity_aliases(brand)
+    )
     if not trusted_brand and not any(contains(text, alias) for alias in aliases):
         return False
     match = contains(text, model)

@@ -204,7 +204,10 @@ def build_for(connection, model_id, instance, user, force=False, retry=None):
         build = new_job(
             connection,
             "research",
-            {"productModelId": str(model_id)},
+            {
+                "productModelId": str(model_id),
+                **({"refreshOfficial": True} if force else {}),
+            },
             key=f"build:{model_id}:{revision}",
             retry=retry,
         )

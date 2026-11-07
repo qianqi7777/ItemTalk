@@ -26,6 +26,12 @@ def reviewed_domains(brand):
     return next((list(domains) for aliases, domains in BRANDS if key in aliases), None)
 
 
+def reviewed_identity_aliases(brand):
+    """Same-brand names only: sharing manufacturer domains is not identity equivalence."""
+    key = normalize(brand)
+    return ROSESELSA_ALIASES if key in ROSESELSA_ALIASES else (key,)
+
+
 def reviewed_entry_pages(brand):
     """Fixed navigation seeds only; these pages do not themselves prove a model."""
     if normalize(brand) in ROSESELSA_ALIASES:
