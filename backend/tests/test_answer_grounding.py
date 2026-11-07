@@ -108,7 +108,9 @@ def test_partial_fact_support_becomes_insufficiency_not_a_verified_answer(
     )
     assert response.status_code == (200 if stream else 201)
     message = latest(client, conversation)[-1]
-    assert "资料不足" in message["content"] and message["citations"] == []
+    assert message["content"].startswith("模型推测 · 未经资料核验")
+    assert message["webLookup"]["lookupMode"] == "model_reference"
+    assert message["citations"] == [] and not message["webSources"]
 
 
 @pytest.mark.parametrize("stream", [False, True])

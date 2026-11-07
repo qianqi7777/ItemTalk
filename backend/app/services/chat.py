@@ -6,11 +6,11 @@ from uuid import UUID, uuid4
 from app.adapters import ModelGateway
 from app.config import settings
 from app.db import execute, json_value, many, one, transaction
+from app.deadlines import remaining
 from app.errors import DomainError, missing
 from app.grounding import evidence_insufficient, grounded_answer
 from app.safety import risk_of
 from app.security import digest, normalize
-from app.services.general_advice import general_advice, requires_evidence
 from app.services.products import owned, require_assets
 from app.storage import Storage
 
@@ -546,10 +546,8 @@ def _complete_run(run, on_token=None, on_status=None):
                     if has_evidence
                     else SUMMARIES["other"]
                 )
-                answer, citations = general_advice(message["content"] or ""), []
-                answer_basis = (
-                    "insufficient" if requires_evidence(message["content"] or "") else "general"
-                )
+                answer, citations = "", []
+                answer_basis = "insufficient"
             else:
                 evidence = [
                     {"rank": index, "content": chunk["content"]}
@@ -634,15 +632,18 @@ def _complete_run(run, on_token=None, on_status=None):
             )
             if web_answer:
                 answer, answer_basis, citations = web_answer, web_basis, []
-        if (
-            answer_basis == "insufficient"
-            and not citations
-            and not requires_evidence(message["content"] or "")
-        ):
-            answer = (
-                general_advice(message["content"] or "")
-                + "\n\n现有已核验资料不足以支持具体型号结论。"
+        if answer_basis == "insufficient" and not citations:
+            from app.services.model_reference import answer as reference_answer
+
+            if run_cancelled(run):
+                raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
+            if on_status:
+                on_status("model_reference")
+            answer, web_lookup = reference_answer(
+                run, instance, message["content"] or "", gateway, web_lookup, user_memories
             )
+            if run_cancelled(run):
+                raise DomainError(409, "RESOURCE_CONFLICT", "回答已停止")
             answer_basis = "general"
         with transaction() as connection:
             owned(connection, "conversations", run["conversation_id"], run["user_id"])
@@ -664,6 +665,7 @@ def _complete_run(run, on_token=None, on_status=None):
             from app.services.memories import schedule as schedule_memories
 
             schedule_memories(connection, message, instance["id"])
+            remaining(settings().chat_timeout_seconds)
             output = one(
                 connection,
                 (

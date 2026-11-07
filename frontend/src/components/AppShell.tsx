@@ -137,7 +137,7 @@ export function AppShell({
           <div className="topbar-actions">
             <span className="topbar-status">
               <CircleCheck size={15} aria-hidden="true" />
-              {management ? '仅管理员可见' : '答案附有资料来源'}
+              {management ? '仅管理员可见' : '资料可追溯，推测有标注'}
             </span>
             <Button
               className="account-button"

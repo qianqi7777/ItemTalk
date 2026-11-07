@@ -33,10 +33,10 @@ export function KnowledgeProgress({
       ) && (
         <p className={compact ? 'knowledge-help-compact' : undefined}>
           {compact ? (
-            '资料不足，仍可提问；具体操作需适用资料。'
+            '资料不足，仍可提问；参考回答会明确标注核验状态。'
           ) : (
             <>
-              仍可提问，资料不足时会提供明确标注的低风险通用建议；具体参数与操作需要适用资料。
+              仍可提问；找到资料时附上来源，资料不足时会明确标注“模型推测，未经资料核验”。
             </>
           )}
         </p>

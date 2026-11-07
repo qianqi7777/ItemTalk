@@ -134,7 +134,7 @@ def test_cached_lookup_reused_and_force_bypasses_without_mutating_old_answer(cli
     path = f"/conversations/{conversation['id']}/messages"
     first = post(client, path, {"content": "蓝牙连接不上？"}).json()
     count = len(online)
-    second = post(client, path, {"content": "怎么蓝牙配对？"}).json()
+    second = post(client, path, {"content": "蓝牙连接不上？"}).json()
     assert first["answerBasis"] == second["answerBasis"] == "web"
     assert second["webLookup"]["cached"] and len(online) == count
     forced = post(client, path, {"content": "蓝牙连接不上？", "forceWebSearch": True}).json()
@@ -163,14 +163,25 @@ def test_search_failure_falls_back_with_truthful_reason(client, monkeypatch):
     )
 
 
-def test_third_party_never_enables_firmware_steps(client, online):
+def test_unsupported_third_party_facts_do_not_become_cited_firmware_instructions(
+    client, online, monkeypatch
+):
+    monkeypatch.setattr(
+        ModelGateway,
+        "assess_answer",
+        lambda *_a, **_kw: {
+            "fullySupported": False,
+            "citations": [{"rank": 1, "supported": False, "quote": ""}],
+        },
+    )
     register_login(client)
     product = identified_product(client)
     conversation = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
     saved = post(
         client, f"/conversations/{conversation['id']}/messages", {"content": "如何刷固件？"}
     ).json()
-    assert online and saved["answerBasis"] == "insufficient" and not saved["webSources"]
+    assert online and saved["answerBasis"] == "general" and not saved["webSources"]
+    assert saved["webLookup"]["lookupMode"] == "model_reference"
 
 
 def test_forced_research_reuses_owned_original_question(client, online):
@@ -228,8 +239,8 @@ def test_low_risk_question_cannot_receive_third_party_reset_steps(client, online
         ModelGateway,
         "assess_answer",
         lambda *_args, **_kwargs: {
-            "fullySupported": True,
-            "citations": [{"rank": 1, "supported": True, "quote": body}],
+            "fullySupported": False,
+            "citations": [{"rank": 1, "supported": False, "quote": ""}],
         },
     )
     register_login(client)
@@ -239,4 +250,5 @@ def test_low_risk_question_cannot_receive_third_party_reset_steps(client, online
         client, f"/conversations/{c['id']}/messages", {"content": "蓝牙连接不上怎么办？"}
     ).json()
     assert result["answerBasis"] == "general" and not result["webSources"]
-    assert result["webLookup"]["reason"] == "official_required"
+    assert result["webLookup"]["reason"] == "unsupported"
+    assert result["webLookup"]["lookupMode"] == "model_reference"

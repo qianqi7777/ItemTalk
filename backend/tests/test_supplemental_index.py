@@ -224,7 +224,7 @@ def test_withdrawal_during_answer_assessment_prevents_commit(client, monkeypatch
     )
 
 
-def test_supplement_does_not_enable_sensitive_device_steps(client, monkeypatch):
+def test_high_risk_actions_do_not_use_supplement_or_model_reference(client, monkeypatch):
     from app.services import web_answer
     from tests.test_api import post
 
@@ -248,6 +248,8 @@ def test_supplement_does_not_enable_sensitive_device_steps(client, monkeypatch):
     )
     conversation = post(client, "/conversations", {"userProductInstanceId": product["id"]}).json()
     saved = post(
-        client, f"/conversations/{conversation['id']}/messages", {"content": "如何刷固件？"}
+        client,
+        f"/conversations/{conversation['id']}/messages",
+        {"content": "如何带电拆机短接保护？"},
     ).json()
-    assert saved["answerBasis"] == "insufficient" and not saved["webSources"]
+    assert saved["answerBasis"] == "refused" and not saved["webSources"]

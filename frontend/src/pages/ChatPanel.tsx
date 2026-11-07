@@ -38,19 +38,25 @@ type QuestionDraft = {
   optimisticId?: string;
 };
 const generalLabel = '通用建议 · 未经该型号官方资料核验';
+const referenceLabel = '模型推测 · 未经资料核验';
+const unverifiedLabel = (message: Message) =>
+  message.webLookup?.lookupMode === 'model_reference'
+    ? referenceLabel
+    : generalLabel;
 const researchStages: Record<string, string> = {
   web_searching: '正在联网查找…',
   web_reading: '正在读取资料…',
   web_verifying: '正在核对型号与来源…',
   web_answering: '正在依据联网资料回答…',
   web_cached: '使用近期检索结果…',
+  model_reference: '正在结合型号生成未核验的参考回答…',
 };
 const lookupReasons: Record<string, string> = {
   no_results: '联网搜索未找到适用资料。',
   unreadable: '找到链接，但暂时无法读取原文。',
   source_rate_limited: '资料网站暂时限制访问，已停止本轮读取，请稍后重试。',
   wrong_model: '搜索结果未能确认适用于当前型号。',
-  official_required: '这项操作需要适用的官方资料，第三方教程不能替代。',
+  official_required: '这条旧回答因当时的来源限制未采用第三方资料，可重新提问。',
   search_unavailable: '联网搜索服务暂时不可用。',
   timeout: '本次联网查找已超时。',
   quota: '本次联网请求达到可用额度。',
@@ -686,14 +692,18 @@ export function ChatPanel({
                 )}
                 {message.answerBasis === 'general' && (
                   <p className="answer-basis" role="note">
-                    {generalLabel}
+                    {unverifiedLabel(message)}
                   </p>
                 )}
                 <MessageContent
                   content={
                     message.answerBasis === 'general' &&
-                    message.content?.startsWith(generalLabel + '\n\n')
-                      ? message.content.slice(generalLabel.length + 2)
+                    message.content?.startsWith(
+                      unverifiedLabel(message) + '\n\n',
+                    )
+                      ? message.content.slice(
+                          unverifiedLabel(message).length + 2,
+                        )
                       : message.content || ''
                   }
                   citations={
